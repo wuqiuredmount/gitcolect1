@@ -1,0 +1,17 @@
+/* 解除 Vite 默认的宽度和居中限制 */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden; /* 防止浏览器出现多余的滚动条 */
+}
+
+#app {
+  height: 100%;
+  width: 100%;
+  max-width: none !important; /* 覆盖 Vite 默认的 1280px 限制 */
+  margin: 0 !important;       /* 覆盖 Vite 默认的居中设置 */
+  padding: 0 !important;      /* 覆盖 Vite 默认的内边距 */
+  text-align: left !important;/* 覆盖 Vite 默认的文字居中 */
+}
