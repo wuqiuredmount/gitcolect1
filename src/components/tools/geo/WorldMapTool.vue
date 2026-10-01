@@ -17,7 +17,7 @@
     <!-- 1. 定位查找 -->
     <LocatingPanel @search="handleSearch" />
 
-    <!-- 2. 图形列表 -->
+    <!-- 2. 图形列表 (纯列表，支持检索和双击定位) -->
     <LayerListPanel 
       :layers="drawnLayers" 
       @locate="flyToLayer" 
@@ -26,7 +26,7 @@
     <!-- 3. 图层透明度 -->
     <OpacityPanel :baseOpacity="baseOpacity" :annoOpacity="annoOpacity" @update:base="updateBaseOpacity" @update:anno="updateAnnoOpacity" />
 
-    <!-- 4. 信息栏 -->
+    <!-- 4. 信息栏 (500个字段编辑 + 格式管理 + 导出 Excel) -->
     <InfoPanel 
       ref="infoPanelRef"
       :layers="drawnLayers" 
@@ -57,7 +57,7 @@ import MarkerDocPanel from './panels/MarkerDocPanel.vue';
 import LocatingPanel from './panels/LocatingPanel.vue';
 import LayerListPanel from './panels/LayerListPanel.vue';
 import OpacityPanel from './panels/OpacityPanel.vue';
-import InfoPanel from './panels/InfoPanel.vue'; // ✨ 引入新的信息栏
+import InfoPanel from './panels/InfoPanel.vue';
 
 L.drawLocal = zhCN_DrawLocal;
 const AMAP_KEY = '69d86725ca981d56159af949ce2a68ec'; 
@@ -82,11 +82,17 @@ const drawnLayers = ref([]);
 onMounted(() => {
   if (!mapContainer.value) return;
 
-  map = L.map(mapContainer.value, { center: [39.0123, 117.3456], zoom: 15, zoomControl: true, attributionControl: false });
+  // ✨ 全球底图初始化
+  map = L.map(mapContainer.value, { center: [30, 0], zoom: 3, zoomControl: true, attributionControl: false });
   L.DomEvent.on(mapContainer.value, 'contextmenu', L.DomEvent.preventDefault);
 
-  baseLayer = L.tileLayer('https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}', { subdomains: ['1', '2', '3', '4'], maxZoom: 18, maxNativeZoom: 18 }).addTo(map);
-  annoLayer = L.tileLayer('https://webst0{s}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}', { subdomains: ['1', '2', '3', '4'], maxZoom: 18, maxNativeZoom: 18 }).addTo(map);
+  baseLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+  }).addTo(map);
+
+  annoLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+  }).addTo(map);
 
   editableLayers = new L.FeatureGroup();
   map.addLayer(editableLayers);
@@ -125,7 +131,7 @@ const handleSearch = async (query, callback) => {
     const data = await res.json();
     if (data.status === '1' && data.geocodes && data.geocodes.length > 0) {
       const location = data.geocodes[0].location.split(',');
-      map.flyTo([parseFloat(location[1]), parseFloat(location[0])], 16, { duration: 2 });
+      map.flyTo([parseFloat(location[1]), parseFloat(location[0])], 6, { duration: 2 });
       callback(`已定位：${data.geocodes[0].formatted_address}`);
     } else {
       callback('未找到相关地点。');
@@ -186,8 +192,8 @@ const handleLayerUpdate = (updatedLayer) => {
 
 const flyToLayer = (item) => {
   if (item.lat && item.lng) {
-    map.flyTo([item.lat, item.lng], 16, { duration: 1.5 });
-    if (item.layerRef) item.layerRef.fire('click'); // 触发点击，联动信息栏和文档面板
+    map.flyTo([item.lat, item.lng], 6, { duration: 1.5 });
+    if (item.layerRef) item.layerRef.fire('click');
   }
 };
 

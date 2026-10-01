@@ -14,19 +14,16 @@
       <button @click="toggleFullscreen" title="全屏切换">⛶</button>
     </div>
 
-    <!-- 1. 定位查找 -->
-    <LocatingPanel @search="handleSearch" />
-
-    <!-- 2. 图形列表 -->
+    <!-- 1. 图形列表 -->
     <LayerListPanel 
       :layers="drawnLayers" 
       @locate="flyToLayer" 
     />
 
-    <!-- 3. 图层透明度 -->
-    <OpacityPanel :baseOpacity="baseOpacity" :annoOpacity="annoOpacity" @update:base="updateBaseOpacity" @update:anno="updateAnnoOpacity" />
+    <!-- 2. 图层透明度 (仅显示底图) -->
+    <OpacityPanel :baseOpacity="baseOpacity" :showAnno="false" @update:base="updateBaseOpacity" />
 
-    <!-- 4. 信息栏 -->
+    <!-- 3. 信息栏 -->
     <InfoPanel 
       ref="infoPanelRef"
       :layers="drawnLayers" 
@@ -54,18 +51,15 @@ import 'leaflet-draw';
 
 import { zhCN_DrawLocal, drawStyles } from '../../../groups/geo/drawConfig.js';
 import MarkerDocPanel from './panels/MarkerDocPanel.vue';
-import LocatingPanel from './panels/LocatingPanel.vue';
 import LayerListPanel from './panels/LayerListPanel.vue';
 import OpacityPanel from './panels/OpacityPanel.vue';
-import InfoPanel from './panels/InfoPanel.vue'; // ✨ 引入新的信息栏
+import InfoPanel from './panels/InfoPanel.vue';
 
 L.drawLocal = zhCN_DrawLocal;
-const AMAP_KEY = '69d86725ca981d56159af949ce2a68ec'; 
 
 let map = null;
 let editableLayers = null;
 let baseLayer = null;
-let annoLayer = null;
 let currentDrawHandler = null;
 let tempRectangle = null;
 let rectStartLatLng = null;
@@ -75,18 +69,21 @@ const mapContainer = ref(null);
 const infoPanelRef = ref(null); 
 const selectedNode = ref(null);
 const baseOpacity = ref(1);
-const annoOpacity = ref(1);
 const activeTool = ref(null); 
 const drawnLayers = ref([]);
+
+// 本地图片配置
+const IMAGE_URL = '/maps/中国地图0003.png'; 
+const IMAGE_BOUNDS = [[3, 73], [55, 135]]; 
 
 onMounted(() => {
   if (!mapContainer.value) return;
 
-  map = L.map(mapContainer.value, { center: [39.0123, 117.3456], zoom: 15, zoomControl: true, attributionControl: false });
+  map = L.map(mapContainer.value, { center: [35, 105], zoom: 4, zoomControl: true, attributionControl: false });
   L.DomEvent.on(mapContainer.value, 'contextmenu', L.DomEvent.preventDefault);
 
-  baseLayer = L.tileLayer('https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}', { subdomains: ['1', '2', '3', '4'], maxZoom: 18, maxNativeZoom: 18 }).addTo(map);
-  annoLayer = L.tileLayer('https://webst0{s}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}', { subdomains: ['1', '2', '3', '4'], maxZoom: 18, maxNativeZoom: 18 }).addTo(map);
+  baseLayer = L.imageOverlay(IMAGE_URL, IMAGE_BOUNDS, { opacity: 1, interactive: false }).addTo(map);
+  map.fitBounds(IMAGE_BOUNDS);
 
   editableLayers = new L.FeatureGroup();
   map.addLayer(editableLayers);
@@ -114,24 +111,6 @@ const toggleFullscreen = () => {
     document.documentElement.requestFullscreen().catch(err => console.warn(err));
   } else {
     document.exitFullscreen();
-  }
-};
-
-const handleSearch = async (query, callback) => {
-  callback('正在搜索...');
-  try {
-    const url = `https://restapi.amap.com/v3/geocode/geo?address=${encodeURIComponent(query)}&key=${AMAP_KEY}`;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data.status === '1' && data.geocodes && data.geocodes.length > 0) {
-      const location = data.geocodes[0].location.split(',');
-      map.flyTo([parseFloat(location[1]), parseFloat(location[0])], 16, { duration: 2 });
-      callback(`已定位：${data.geocodes[0].formatted_address}`);
-    } else {
-      callback('未找到相关地点。');
-    }
-  } catch (error) {
-    callback('搜索失败，请检查网络。');
   }
 };
 
@@ -186,8 +165,8 @@ const handleLayerUpdate = (updatedLayer) => {
 
 const flyToLayer = (item) => {
   if (item.lat && item.lng) {
-    map.flyTo([item.lat, item.lng], 16, { duration: 1.5 });
-    if (item.layerRef) item.layerRef.fire('click'); // 触发点击，联动信息栏和文档面板
+    map.flyTo([item.lat, item.lng], 8, { duration: 1.5 });
+    if (item.layerRef) item.layerRef.fire('click');
   }
 };
 
@@ -248,7 +227,6 @@ const updateNodeStyle = (newStyle) => {
   }
 };
 const updateBaseOpacity = (val) => { baseOpacity.value = val; if (baseLayer) baseLayer.setOpacity(val); };
-const updateAnnoOpacity = (val) => { annoOpacity.value = val; if (annoLayer) annoLayer.setOpacity(val); };
 
 onMounted(() => {
   delete L.Icon.Default.prototype._getIconUrl;

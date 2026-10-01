@@ -1,5 +1,5 @@
 <template>
-  <MapPanel title="🔍 定位查找" :initialTop="15">
+  <MapPanel title="🔍 定位查找" :initialBottom="260">
     <div class="locating-body">
       <div class="search-box">
         <input type="text" v-model="searchQuery" @keyup.enter="emitSearch" placeholder="输入地名" />

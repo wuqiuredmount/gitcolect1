@@ -1,5 +1,4 @@
 <template>
-  <!-- 关键：去掉了 @click，完全依赖脚本中的 mouseup 判断 -->
   <div 
     class="map-panel" 
     :class="{ collapsed: !isExpanded }"
@@ -21,11 +20,14 @@ import { ref } from 'vue';
 
 const props = defineProps({
   title: { type: String, required: true },
-  initialTop: { type: Number, default: 15 },
-  initialRight: { type: Number, default: 15 }
+  initialBottom: { type: Number, default: 15 },
+  initialLeft: { type: Number, default: 60 },
+  // ✨ 新增：是否默认折叠
+  initialCollapsed: { type: Boolean, default: false }
 });
 
-const isExpanded = ref(true);
+// ✨ 核心修改：如果传入了初始折叠，则默认是折叠状态
+const isExpanded = ref(!props.initialCollapsed);
 const panelRef = ref(null);
 
 const startDrag = (e) => {
@@ -44,6 +46,7 @@ const startDrag = (e) => {
   panel.style.left = rect.left + 'px';
   panel.style.top = rect.top + 'px';
   panel.style.right = 'auto';
+  panel.style.bottom = 'auto';
   panel.style.marginBottom = '0';
 
   const onMouseMove = (moveEvent) => {
@@ -61,7 +64,6 @@ const startDrag = (e) => {
   const onMouseUp = () => {
     document.removeEventListener('mousemove', onMouseMove);
     document.removeEventListener('mouseup', onMouseUp);
-    // 如果没有发生拖拽（移动距离小于3像素），则视为点击，触发折叠
     if (!isDragging) {
       isExpanded.value = !isExpanded.value;
     }
@@ -76,15 +78,15 @@ const startDrag = (e) => {
 <style scoped>
 .map-panel {
   position: absolute;
-  right: 15px;
-  top: v-bind('initialTop + "px"'); /* 核心：接收初始高度 */
+  left: v-bind('initialLeft + "px"');
+  bottom: v-bind('initialBottom + "px"');
   z-index: 1050;
   background: rgba(255, 255, 255, 0.95);
   border-radius: 5px;
   box-shadow: 0 2px 6px rgba(0,0,0,0.2);
   width: max-content;
   min-width: 80px;
-  max-width: 200px;
+  max-width: 350px; /* 稍微放宽一点 */
   user-select: none;
   overflow: hidden;
 }
