@@ -1,6 +1,13 @@
-<template><BaseMapTool :config="config" /></template>
+<template>
+  <BaseMapTool ref="baseMapToolRef" :config="config" />
+</template>
+
 <script setup>
+import { ref } from 'vue';
 import BaseMapTool from './BaseMapTool.vue';
+
+const baseMapToolRef = ref(null);
+
 const config = {
   toolId: 'geo-china-map',
   baseLayer: {
@@ -11,4 +18,10 @@ const config = {
   initialView: { center: [39.0123, 117.3456], zoom: 15 },
   visibleTools: { zoomControl: true, drawToolbar: true, markerDocPanel: true, locatingPanel: true, opacityPanel: true, layerListPanel: true, infoPanel: true }
 };
+
+defineExpose({
+  getProjectData: () => baseMapToolRef.value?.getProjectData(),
+  loadProjectData: (data) => baseMapToolRef.value?.loadProjectData(data),
+  saveProjectToInventory: (name) => baseMapToolRef.value?.saveProjectToInventory(name)
+});
 </script>

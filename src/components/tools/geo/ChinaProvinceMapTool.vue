@@ -1,26 +1,23 @@
 <template>
-  <BaseMapTool :config="config" />
+  <BaseMapTool ref="baseMapToolRef" :config="config" />
 </template>
 
 <script setup>
+import { ref } from 'vue';
 import BaseMapTool from './BaseMapTool.vue';
+
+const baseMapToolRef = ref(null);
 
 const config = {
   toolId: 'geo-province-map',
-  baseLayer: {
-    type: 'local-image',
-    url: '/maps/中国地图0003.png',
-    bounds: [[3, 73], [55, 135]]
-  },
+  baseLayer: { type: 'local-image', url: '/maps/中国地图0003.png', bounds: [[3, 73], [55, 135]] },
   initialView: { center: [35, 105], zoom: 4 },
-  visibleTools: {
-    zoomControl: true,
-    drawToolbar: true,
-    markerDocPanel: true,
-    locatingPanel: true, // ✨ 恢复定位查找
-    opacityPanel: true,
-    layerListPanel: true,
-    infoPanel: true
-  }
+  visibleTools: { zoomControl: true, drawToolbar: true, markerDocPanel: true, locatingPanel: true, opacityPanel: true, layerListPanel: true, infoPanel: true }
 };
+
+defineExpose({
+  getProjectData: () => baseMapToolRef.value?.getProjectData(),
+  loadProjectData: (data) => baseMapToolRef.value?.loadProjectData(data),
+  saveProjectToInventory: (name) => baseMapToolRef.value?.saveProjectToInventory(name)
+});
 </script>

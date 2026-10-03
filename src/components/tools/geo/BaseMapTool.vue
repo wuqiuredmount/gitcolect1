@@ -2,15 +2,19 @@
   <div class="map-wrapper">
     <div ref="mapContainer" class="map-container-div"></div>
 
-    <!-- ⚠️ 核心修复：使用绝对定位强行覆盖，确保上传界面一定能显示 -->
+    <div v-if="finalVisibleTools.zoomControl" class="custom-zoom-control">
+      <button @click="map?.zoomIn()" title="放大">+</button>
+      <button @click="map?.zoomOut()" title="缩小">-</button>
+    </div>
+
     <div v-if="config.baseLayer.type === 'custom-canvas' && !isCustomImageLoaded" class="upload-container">
       <div class="upload-box">
-        <h2>📁 自定义底图 + 自由标记</h2>
+        <h2>自定义底图 + 自由标记</h2>
         <p>请选择底图，或加载之前的标注</p>
         <div class="upload-actions">
-          <button class="action-btn primary" @click="triggerUpload('base')">🖼️ 打开底图</button>
-          <button class="action-btn" @click="triggerUpload('layer')">📋 打开标注层</button>
-          <button class="action-btn" @click="triggerUpload('both')">📦 打开底图+标注层</button>
+          <button class="action-btn primary" @click="triggerUpload('base')">打开底图</button>
+          <button class="action-btn" @click="triggerUpload('layer')">打开标注层</button>
+          <button class="action-btn" @click="triggerUpload('both')">打开底图+标注层</button>
         </div>
         <p class="upload-hint">支持任意图片格式，大文件也无需担心</p>
         <input type="file" accept="image/*" @change="handleBaseUpload" ref="baseInputRef" style="display: none;" />
@@ -20,46 +24,60 @@
     </div>
 
     <template v-if="config.baseLayer.type !== 'custom-canvas' || isCustomImageLoaded">
-      <div v-if="config.visibleTools.drawToolbar" class="custom-toolbar" :data-tool-id="'draw-' + config.toolId">
-        <button :class="{ active: activeTool === 'polygon' }" @click="startDrawing('polygon')" title="绘制多边形">⬠</button>
-        <button :class="{ active: activeTool === 'polyline' }" @click="startDrawing('polyline')" title="绘制折线">📈</button>
-        <button :class="{ active: activeTool === 'rectangle' }" @click="startDrawing('rectangle')" title="绘制矩形">⬜</button>
-        <button :class="{ active: activeTool === 'marker' }" @click="startDrawing('marker')" title="绘制标记点">📍</button>
+      <div v-if="finalVisibleTools.drawToolbar" class="custom-toolbar" :data-tool-id="'draw-' + config.toolId">
+        <button :class="{ active: activeTool === 'polygon' }" @click="startDrawing('polygon')" title="绘制多边形"> ⬠ </button>
+        <button :class="{ active: activeTool === 'polyline' }" @click="startDrawing('polyline')" title="绘制折线"> 📈 </button>
+        <button :class="{ active: activeTool === 'rectangle' }" @click="startDrawing('rectangle')" title="绘制标准图形"> ▭ </button>
+        <button :class="{ active: activeTool === 'circle' }" @click="startDrawing('circle')" title="绘制圆形"> ◯ </button>
+        <button :class="{ active: activeTool === 'ellipse' }" @click="startDrawing('ellipse')" title="绘制椭圆"> ⬭ </button>
+        <button :class="{ active: activeTool === 'marker' }" @click="startDrawing('marker')" title="绘制标记点"> 📍 </button>
         <hr class="toolbar-divider">
-        <button :class="{ active: activeTool === 'edit' }" @click="toggleEditMode" title="编辑图形形状">✏️</button>
-        <button @click="clearAllLayers" title="清除所有" style="color: #e74c3c;">🗑️</button>
+        <button :class="{ active: activeTool === 'edit' }" @click="toggleEditMode" title="编辑图形形状"> ✏️ </button>
+        <button @click="clearAllLayers()" title="清除所有" style="color: #e74c3c;"> 🗑️ </button>
         <hr class="toolbar-divider">
-        <button @click="toggleFullscreen" title="全屏切换">⛶</button>
+        <button @click="toggleFullscreen" title="全屏切换"> ⛶ </button>
         <hr v-if="config.baseLayer.type === 'custom-canvas'" class="toolbar-divider">
-        <button v-if="config.baseLayer.type === 'custom-canvas'" @click="resetImage" title="重新选择图片">🖼️</button>
+        <button v-if="config.baseLayer.type === 'custom-canvas'" @click="resetImage" title="重新选择图片"> 🔄 </button>
       </div>
 
-      <LocatingPanel v-if="config.visibleTools.locatingPanel" :panel-id="'locating-' + config.toolId" @search="handleSearch" />
-      <LayerListPanel v-if="config.visibleTools.layerListPanel" :panel-id="'layerList-' + config.toolId" :layers="drawnLayers" @locate="flyToLayer" />
-      <OpacityPanel v-if="config.visibleTools.opacityPanel" :panel-id="'opacity-' + config.toolId" :baseOpacity="baseOpacity" :annoOpacity="annoOpacity" :showAnno="config.baseLayer.annoUrl ? true : false" @update:base="updateBaseOpacity" @update:anno="updateAnnoOpacity" />
-      <InfoPanel v-if="config.visibleTools.infoPanel" ref="infoPanelRef" :tool-id="config.toolId" :layers="drawnLayers" @locate="flyToLayer" @update-layer="handleLayerUpdate" />
+      <Teleport to="#tool-header-slot">
+        <LayerListPanel 
+          v-if="finalVisibleTools.layerListPanel" 
+          :panel-id="'layerList-' + config.toolId" 
+          :layers="drawnLayers" 
+          :groups="groups"
+          @locate="flyToLayer"
+          @add-group="handleAddGroup"
+          @remove-group="handleRemoveGroup"
+          @update-layer-group="handleUpdateLayerGroup"
+        />
+      </Teleport>
 
+      <LocatingPanel v-if="finalVisibleTools.locatingPanel" :panel-id="'locating-' + config.toolId" @search="handleSearch" />
+      <OpacityPanel v-if="finalVisibleTools.opacityPanel" :panel-id="'opacity-' + config.toolId" :baseOpacity="baseOpacity" :annoOpacity="annoOpacity" :showAnno="config.baseLayer.annoUrl ? true : false" @update:base="updateBaseOpacity" @update:anno="updateAnnoOpacity" />
+      <InfoPanel v-if="finalVisibleTools.infoPanel" ref="infoPanelRef" :tool-id="config.toolId" :layers="drawnLayers" @locate="flyToLayer" @update-layer="handleLayerUpdate" />
+      
       <MarkerDocPanel 
-        v-if="config.visibleTools.markerDocPanel && selectedNode"
-        :node="selectedNode"
-        :tool-id="config.toolId"
-        @close="selectedNode = null"
-        @update:title="handleTitleUpdate"
-        @update:content="handleDocContentUpdate"
-        @update:style="val => updateNodeStyle(val)"
+        v-if="finalVisibleTools.markerDocPanel && selectedNode" 
+        :node="selectedNode" 
+        :tool-id="config.toolId" 
+        @close="selectedNode = null" 
+        @update:title="handleTitleUpdate" 
+        @update:content="handleDocContentUpdate" 
+        @update:style="val => updateNodeStyle(val)" 
       />
 
       <div v-if="config.baseLayer.type === 'custom-canvas'" class="save-toolbar">
-        <button @click="saveData('base')">💾 保存底图</button>
-        <button @click="saveData('layer')">💾 保存标注层</button>
-        <button @click="saveData('both')">📦 保存底图+标注层</button>
+        <button @click="saveData('base')">保存底图</button>
+        <button @click="saveData('layer')">保存标注层</button>
+        <button @click="saveData('both')">保存底图+标注层</button>
       </div>
     </template>
   </div>
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue';
+import { onMounted, onUnmounted, ref, computed } from 'vue';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-draw/dist/leaflet.draw.css';
@@ -68,6 +86,10 @@ import 'leaflet-draw';
 import { zhCN_DrawLocal, drawStyles } from '../../../groups/geo/utils/drawConfig.js';
 import { saveAllLayers, getAllLayers } from '../../../groups/geo/utils/annotationStore.js';
 import { downloadFile, fileToBase64, serializeAnnotations, packageProject, parseProject } from '../../../groups/geo/utils/fileManager.js';
+import { getMergedToolConfig, getDefaultStyle } from '../../../groups/geo/utils/toolSettings.js';
+import { MARKER_ICONS } from '../../../groups/geo/utils/markerIcons.js';
+import { buildProjectFile } from '../../../groups/geo/utils/projectManager.js';
+import { saveProjectToInventory } from '../../../groups/geo/utils/projectStore.js';
 
 import LocatingPanel from './panels/LocatingPanel.vue';
 import LayerListPanel from './panels/LayerListPanel.vue';
@@ -90,6 +112,10 @@ const props = defineProps({
   }
 });
 
+const finalVisibleTools = computed(() => {
+  return getMergedToolConfig(props.config.toolId, props.config.visibleTools);
+});
+
 const mapContainer = ref(null);
 const baseInputRef = ref(null);
 const layerInputRef = ref(null);
@@ -102,7 +128,11 @@ let baseLayer = null;
 let annoLayer = null;
 let currentDrawHandler = null;
 let tempRectangle = null;
+let tempCircle = null;
+let tempEllipse = null;
 let rectStartLatLng = null;
+let circleStartLatLng = null;
+let ellipseStartLatLng = null;
 let resizeObserver = null;
 
 let currentBaseImageData = null;
@@ -114,20 +144,85 @@ const baseOpacity = ref(1);
 const annoOpacity = ref(1);
 const activeTool = ref(null);
 const drawnLayers = ref([]);
+const groups = ref(['默认']); // 🚨 核心：独立的分组数据源
 const isCustomImageLoaded = ref(false);
 const AMAP_KEY = '69d86725ca981d56159af949ce2a68ec';
+
+const getMarkerIcon = (style) => {
+  const color = style.color || '#1890ff';
+  const size = style.iconSize || 32;
+  const opacity = style.fillOpacity !== undefined ? style.fillOpacity : 1;
+  const iconType = style.iconType !== undefined ? style.iconType : 0;
+  
+  const iconDef = MARKER_ICONS.find(i => i.id === iconType) || MARKER_ICONS[0];
+  const svgHtml = iconDef.svg.replace(/#COLOR#/g, color);
+
+  return L.divIcon({
+    className: 'custom-marker-icon',
+    html: `<div style="width: ${size}px; height: ${size}px; opacity: ${opacity}; display: flex; align-items: center; justify-content: center;">${svgHtml}</div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size], 
+    popupAnchor: [0, -size]
+  });
+};
+
+const generateCirclePoints = (center, radiusInMeters, numPoints = 64) => {
+  const points = [];
+  const latRadius = radiusInMeters / 111320;
+  const lngRadius = radiusInMeters / (111320 * Math.cos(center.lat * Math.PI / 180));
+  for (let i = 0; i < numPoints; i++) {
+    const angle = (i / numPoints) * 2 * Math.PI;
+    points.push([
+      center.lat + latRadius * Math.sin(angle),
+      center.lng + lngRadius * Math.cos(angle)
+    ]);
+  }
+  return points;
+};
+
+const generateEllipsePoints = (center, latRadius, lngRadius, numPoints = 64) => {
+  const points = [];
+  for (let i = 0; i < numPoints; i++) {
+    const angle = (i / numPoints) * 2 * Math.PI;
+    points.push([
+      center.lat + latRadius * Math.sin(angle),
+      center.lng + lngRadius * Math.cos(angle)
+    ]);
+  }
+  return points;
+};
+
+const handleMoveEnd = () => {
+  if (map) {
+    const state = {
+      center: [map.getCenter().lat, map.getCenter().lng],
+      zoom: map.getZoom()
+    };
+    localStorage.setItem(`geo_last_state_${props.config.toolId}`, JSON.stringify(state));
+  }
+};
 
 const initMap = () => {
   if (!mapContainer.value) return;
   if (map) { map.remove(); }
+
   const view = props.config.initialView || { center: [39.0123, 117.3456], zoom: 15 };
   const baseCfg = props.config.baseLayer;
+
   const mapOptions = baseCfg.type === 'custom-canvas'
-    ? { crs: L.CRS.Simple, minZoom: -3, maxZoom: 5, zoomControl: true, attributionControl: false }
-    : { center: view.center, zoom: view.zoom, zoomControl: true, attributionControl: false };
+    ? { crs: L.CRS.Simple, minZoom: -3, maxZoom: 5, zoomControl: false, attributionControl: false }
+    : { center: view.center, zoom: view.zoom, zoomControl: false, attributionControl: false };
 
   map = L.map(mapContainer.value, mapOptions);
   L.DomEvent.on(mapContainer.value, 'contextmenu', L.DomEvent.preventDefault);
+
+  const savedState = localStorage.getItem(`geo_last_state_${props.config.toolId}`);
+  if (savedState) {
+    try {
+      const parsed = JSON.parse(savedState);
+      map.setView(parsed.center, parsed.zoom);
+    } catch (e) {}
+  }
 
   if (baseCfg.type === 'amap-satellite' || baseCfg.type === 'amap-standard') {
     baseLayer = L.tileLayer(baseCfg.url, { subdomains: ['1', '2', '3', '4'], maxZoom: 18, maxNativeZoom: 18 }).addTo(map);
@@ -144,26 +239,17 @@ const initMap = () => {
   map.addLayer(editableLayers);
   bindMapEvents();
   loadHistoricalLayers();
+
   resizeObserver = new ResizeObserver(() => { if (map) map.invalidateSize(); });
   resizeObserver.observe(mapContainer.value);
   document.addEventListener('fullscreenchange', handleResize);
 };
 
 onMounted(() => {
-  if (props.config.baseLayer.type === 'custom-canvas') return; 
+  if (props.config.baseLayer.type === 'custom-canvas') return;
   initMap();
 
-  const bluePinIcon = L.divIcon({
-    className: 'custom-blue-pin',
-    html: `<div style="position: relative; width: 30px; height: 42px;">
-             <div style="position: absolute; top: 0; left: 0; width: 26px; height: 26px; background: #1890ff; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.4);"></div>
-             <div style="position: absolute; top: 8px; left: 8px; width: 14px; height: 14px; background: #fff; border-radius: 50%;"></div>
-           </div>`,
-    iconSize: [30, 42],
-    iconAnchor: [15, 42],
-    popupAnchor: [0, -42]
-  });
-  L.Marker.prototype.options.icon = bluePinIcon;
+  L.Marker.prototype.options.icon = getMarkerIcon(getDefaultStyle('marker'));
 });
 
 onUnmounted(() => {
@@ -173,25 +259,36 @@ onUnmounted(() => {
 });
 
 const handleResize = () => { setTimeout(() => { if (map) map.invalidateSize(); }, 100); };
-const toggleFullscreen = () => { if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(err => console.warn(err)); else document.exitFullscreen(); };
+const toggleFullscreen = () => {
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(err => console.warn(err));
+  else document.exitFullscreen();
+};
 
 const loadHistoricalLayers = async () => {
   if (!map || !editableLayers) return;
   const records = await getAllLayers(props.config.toolId);
   if (!records || records.length === 0) return;
+
   records.forEach(item => {
     let layer = null;
     try {
-      if (item.type === 'polygon') layer = L.polygon(item.coords, item.style).addTo(map);
+      if (item.type === 'polygon' || item.type === 'circle' || item.type === 'ellipse') layer = L.polygon(item.coords, item.style).addTo(map);
       else if (item.type === 'polyline') layer = L.polyline(item.coords, item.style).addTo(map);
       else if (item.type === 'rectangle') layer = L.rectangle(item.coords, item.style).addTo(map);
-      else if (item.type === 'marker') layer = L.marker(item.coords[0]).addTo(map);
+      else if (item.type === 'marker') {
+        const markerStyle = { ...getDefaultStyle('marker'), ...(item.style || {}) };
+        layer = L.marker(item.coords[0], { icon: getMarkerIcon(markerStyle) }).addTo(map);
+      }
     } catch (e) { console.warn('加载历史图层失败', e); }
+
     if (layer) {
       editableLayers.addLayer(layer);
       layer.uniqueId = item.id;
       const layerData = { ...item, layerRef: layer };
       drawnLayers.value.push(layerData);
+      if (item.group && !groups.value.includes(item.group)) {
+        groups.value.push(item.group);
+      }
       layer.on('click', () => {
         const currentData = drawnLayers.value.find(d => d.id === layer.uniqueId);
         if (currentData) {
@@ -209,10 +306,24 @@ const bindMapEvents = () => {
     map.off('contextmenu', finishDrawing);
     if (!currentDrawHandler || !currentDrawHandler._enabled) activeTool.value = null;
   });
+  
   map.on(L.Draw.Event.CREATED, (e) => {
-    addLayerToMap(e.layer, e.layerType, e.layer.getLatLng ? e.layer.getLatLng() : (e.layer.getBounds ? e.layer.getBounds().getCenter() : null));
-    activeTool.value = null; currentDrawHandler = null;
+    let layer = e.layer;
+    let type = e.layerType;
+    let latlng = null;
+
+    if (type === 'marker') {
+      latlng = layer.getLatLng();
+      layer.setIcon(getMarkerIcon(getDefaultStyle('marker')));
+    } else {
+      latlng = layer.getLatLng ? layer.getLatLng() : (layer.getBounds ? layer.getBounds().getCenter() : null);
+    }
+
+    addLayerToMap(layer, type, latlng);
+    activeTool.value = null; 
+    currentDrawHandler = null;
   });
+
   map.on(L.Draw.Event.EDITED, (e) => {
     e.layers.eachLayer((layer) => {
       const item = drawnLayers.value.find(d => d.id === layer.uniqueId);
@@ -223,21 +334,34 @@ const bindMapEvents = () => {
     });
     saveAllLayers(props.config.toolId, drawnLayers.value);
   });
+
+  map.on('moveend', handleMoveEnd);
 };
 
 const addLayerToMap = (layer, type, latlng) => {
   const uuid = Date.now().toString(36) + Math.random().toString(36).substring(2, 9);
   layer.uniqueId = uuid;
-  editableLayers.addLayer(layer);
-  const initialTitle = type === 'marker' ? '默认名称' : `自定义${type === 'polygon' ? '区域' : type === 'polyline' ? '路线' : type === 'rectangle' ? '矩形' : '标记'}`;
+
+  const initialTitle = ''; 
+  const defaultStyle = { ...getDefaultStyle(type) };
+
   const layerData = {
     id: uuid, toolId: props.config.toolId, title: initialTitle, type,
     lat: latlng ? latlng.lat : 0, lng: latlng ? latlng.lng : 0,
-    layerRef: layer, docHtml: '', objectName: '默认名称',
-    fields: Array.from({ length: 500 }).map((_, i) => ({ label: `信息的名称${i + 1}`, value: '' })),
-    style: { color: layer.options.color || '#3388ff', fillColor: layer.options.fillColor || '#3388ff', fillOpacity: layer.options.fillOpacity !== undefined ? layer.options.fillOpacity : 0.2, weight: layer.options.weight || 3 }
+    layerRef: layer, docHtml: '', 
+    objectName: '', 
+    group: '默认', // 🚨 核心：初始化分组为默认
+    fields: Array.from({ length: 500 }).map(() => ({ label: '', value: '' })),
+    style: defaultStyle
   };
+
+  if (type === 'marker') {
+    layer.setIcon(getMarkerIcon(defaultStyle));
+  }
+
+  editableLayers.addLayer(layer);
   drawnLayers.value.push(layerData);
+
   layer.on('click', () => {
     const currentData = drawnLayers.value.find(d => d.id === layer.uniqueId);
     if (currentData) {
@@ -251,15 +375,89 @@ const addLayerToMap = (layer, type, latlng) => {
 const handleLayerUpdate = (updatedLayer) => {
   const index = drawnLayers.value.findIndex(l => l.id === updatedLayer.id);
   if (index !== -1) {
+    if (updatedLayer.objectName !== undefined) {
+      drawnLayers.value[index].title = updatedLayer.objectName;
+    }
     drawnLayers.value[index] = { ...drawnLayers.value[index], ...updatedLayer, toolId: props.config.toolId };
+    
     if (selectedNode.value && selectedNode.value.id === updatedLayer.id) {
       selectedNode.value = { ...selectedNode.value, ...updatedLayer };
+      if (updatedLayer.objectName !== undefined) {
+        selectedNode.value.title = updatedLayer.objectName;
+      }
     }
     saveAllLayers(props.config.toolId, drawnLayers.value);
   }
 };
-const handleTitleUpdate = (val) => { if (selectedNode.value) { selectedNode.value.title = val; handleLayerUpdate({ id: selectedNode.value.id, title: val }); } };
-const handleDocContentUpdate = (val) => { if (selectedNode.value) { selectedNode.value.docHtml = val; handleLayerUpdate({ id: selectedNode.value.id, docHtml: val }); } };
+
+// 🚨 核心：接收来自列表的分组变更
+const handleUpdateLayerGroup = ({ id, group }) => {
+  const index = drawnLayers.value.findIndex(l => l.id === id);
+  if (index !== -1) {
+    drawnLayers.value[index].group = group;
+    if (group && !groups.value.includes(group)) {
+      groups.value.push(group);
+    }
+    saveAllLayers(props.config.toolId, drawnLayers.value);
+  }
+};
+
+// 🚨 核心：新增分组（即使没有图形）
+const handleAddGroup = (groupName) => {
+  if (groupName && !groups.value.includes(groupName)) {
+    groups.value.push(groupName);
+  }
+};
+
+// 🚨 核心：删除分组
+const handleRemoveGroup = (groupName) => {
+  groups.value = groups.value.filter(g => g !== groupName);
+  let hasChange = false;
+  drawnLayers.value.forEach(layer => {
+    if (layer.group === groupName) {
+      layer.group = '默认';
+      hasChange = true;
+    }
+  });
+  if (hasChange) {
+    saveAllLayers(props.config.toolId, drawnLayers.value);
+  }
+};
+
+const handleTitleUpdate = (payload) => {
+  const id = typeof payload === 'object' ? payload.id : (selectedNode.value ? selectedNode.value.id : null);
+  const title = typeof payload === 'object' ? payload.title : payload;
+
+  if (!id) return;
+  
+  const index = drawnLayers.value.findIndex(l => l.id === id);
+  if (index !== -1) {
+    drawnLayers.value[index].title = title;
+    drawnLayers.value[index].objectName = title;
+  }
+  if (selectedNode.value && selectedNode.value.id === id) {
+    selectedNode.value.title = title;
+    selectedNode.value.objectName = title;
+  }
+  handleLayerUpdate({ id: id, title: title, objectName: title });
+};
+
+const handleDocContentUpdate = (payload) => {
+  const id = typeof payload === 'object' ? payload.id : (selectedNode.value ? selectedNode.value.id : null);
+  const docHtml = typeof payload === 'object' ? payload.docHtml : payload;
+
+  if (!id) return;
+
+  const index = drawnLayers.value.findIndex(l => l.id === id);
+  if (index !== -1) {
+    drawnLayers.value[index].docHtml = docHtml;
+  }
+  if (selectedNode.value && selectedNode.value.id === id) {
+    selectedNode.value.docHtml = docHtml;
+  }
+  handleLayerUpdate({ id: id, docHtml: docHtml });
+};
+
 const flyToLayer = (item) => {
   if (item.lat && item.lng && map) {
     const zoom = props.config.baseLayer.type === 'custom-canvas' ? 2 : 16;
@@ -267,51 +465,189 @@ const flyToLayer = (item) => {
     if (item.layerRef) item.layerRef.fire('click');
   }
 };
-const clearAllLayers = () => {
-  editableLayers.clearLayers();
+
+const clearAllLayers = (silent = false) => {
+  if (!silent && !window.confirm('确认清除所有图形元素并删除相应信息吗？')) return;
+  if (editableLayers) {
+    editableLayers.clearLayers();
+  }
   if (tempRectangle) { map.removeLayer(tempRectangle); tempRectangle = null; }
-  selectedNode.value = null; activeTool.value = null; rectStartLatLng = null; drawnLayers.value = [];
-  saveAllLayers(props.config.toolId, []);
+  if (tempCircle) { map.removeLayer(tempCircle); tempCircle = null; }
+  if (tempEllipse) { map.removeLayer(tempEllipse); tempEllipse = null; }
+  selectedNode.value = null;
+  activeTool.value = null;
+  rectStartLatLng = null; circleStartLatLng = null; ellipseStartLatLng = null;
+  drawnLayers.value = [];
+  groups.value = ['默认'];
+  if (!silent) {
+    saveAllLayers(props.config.toolId, []);
+  }
 };
 
 const startDrawing = (type) => {
   if (currentDrawHandler && currentDrawHandler._enabled) currentDrawHandler.disable();
   if (tempRectangle) { map.removeLayer(tempRectangle); tempRectangle = null; }
-  rectStartLatLng = null; activeTool.value = type;
-  if (type === 'rectangle') { map.on('click', handleRectangleClick); map.on('mousemove', handleRectangleMouseMove); return; }
-  let options = { shapeOptions: drawStyles[type] };
+  if (tempCircle) { map.removeLayer(tempCircle); tempCircle = null; }
+  if (tempEllipse) { map.removeLayer(tempEllipse); tempEllipse = null; }
+  rectStartLatLng = null; circleStartLatLng = null; ellipseStartLatLng = null;
+  activeTool.value = type;
+
+  if (type === 'rectangle') {
+    map.on('click', handleRectangleClick);
+    map.on('mousemove', handleRectangleMouseMove);
+    return;
+  }
+
+  if (type === 'circle') {
+    map.on('click', handleCircleClick);
+    map.on('mousemove', handleCircleMouseMove);
+    return;
+  }
+
+  if (type === 'ellipse') {
+    map.on('click', handleEllipseClick);
+    map.on('mousemove', handleEllipseMouseMove);
+    return;
+  }
+
+  let options = { shapeOptions: getDefaultStyle(type) };
   if (type === 'polygon') currentDrawHandler = new L.Draw.Polygon(map, options);
   else if (type === 'polyline') currentDrawHandler = new L.Draw.Polyline(map, options);
-  else if (type === 'marker') currentDrawHandler = new L.Draw.Marker(map, options);
+  else if (type === 'marker') {
+    options.icon = getMarkerIcon(getDefaultStyle('marker'));
+    currentDrawHandler = new L.Draw.Marker(map, options);
+  }
+  
   if (currentDrawHandler) currentDrawHandler.enable();
 };
+
 const handleRectangleClick = (e) => {
   if (!rectStartLatLng) {
     rectStartLatLng = e.latlng;
-    tempRectangle = L.rectangle([rectStartLatLng, rectStartLatLng], { color: '#ffcc00', fillOpacity: 0.4 }).addTo(map);
+    const style = getDefaultStyle('rectangle');
+    tempRectangle = L.rectangle([rectStartLatLng, rectStartLatLng], { color: style.color, fillColor: style.fillColor, fillOpacity: style.fillOpacity, weight: style.weight }).addTo(map);
   } else {
     if (tempRectangle) { addLayerToMap(tempRectangle, 'rectangle', tempRectangle.getBounds().getCenter()); tempRectangle = null; }
     finishCustomRectangle();
   }
 };
-const handleRectangleMouseMove = (e) => { if (rectStartLatLng && tempRectangle) tempRectangle.setBounds(new L.LatLngBounds(rectStartLatLng, e.latlng)); };
-const finishCustomRectangle = () => { map.off('click', handleRectangleClick); map.off('mousemove', handleRectangleMouseMove); rectStartLatLng = null; tempRectangle = null; activeTool.value = null; map.off('contextmenu', finishDrawing); };
+
+const handleRectangleMouseMove = (e) => {
+  if (rectStartLatLng && tempRectangle) tempRectangle.setBounds(new L.LatLngBounds(rectStartLatLng, e.latlng));
+};
+
+const finishCustomRectangle = () => {
+  map.off('click', handleRectangleClick);
+  map.off('mousemove', handleRectangleMouseMove);
+  rectStartLatLng = null; tempRectangle = null; activeTool.value = null;
+  map.off('contextmenu', finishDrawing);
+};
+
+const handleCircleClick = (e) => {
+  if (!circleStartLatLng) {
+    circleStartLatLng = e.latlng;
+    const style = getDefaultStyle('circle');
+    tempCircle = L.polygon([], { color: style.color, fillColor: style.fillColor, fillOpacity: style.fillOpacity, weight: style.weight }).addTo(map);
+  } else {
+    if (tempCircle) { addLayerToMap(tempCircle, 'circle', tempCircle.getBounds().getCenter()); tempCircle = null; }
+    finishCustomCircle();
+  }
+};
+
+const handleCircleMouseMove = (e) => {
+  if (circleStartLatLng && tempCircle) {
+    const radius = circleStartLatLng.distanceTo(e.latlng);
+    const points = generateCirclePoints(circleStartLatLng, radius);
+    tempCircle.setLatLngs(points);
+  }
+};
+
+const finishCustomCircle = () => {
+  map.off('click', handleCircleClick);
+  map.off('mousemove', handleCircleMouseMove);
+  circleStartLatLng = null; tempCircle = null; activeTool.value = null;
+  map.off('contextmenu', finishDrawing);
+};
+
+const handleEllipseClick = (e) => {
+  if (!ellipseStartLatLng) {
+    ellipseStartLatLng = e.latlng;
+    const style = getDefaultStyle('ellipse');
+    tempEllipse = L.polygon([], { color: style.color, fillColor: style.fillColor, fillOpacity: style.fillOpacity, weight: style.weight }).addTo(map);
+  } else {
+    if (tempEllipse) { addLayerToMap(tempEllipse, 'ellipse', tempEllipse.getBounds().getCenter()); tempEllipse = null; }
+    finishCustomEllipse();
+  }
+};
+
+const handleEllipseMouseMove = (e) => {
+  if (ellipseStartLatLng && tempEllipse) {
+    const latRadius = Math.abs(e.latlng.lat - ellipseStartLatLng.lat);
+    const lngRadius = Math.abs(e.latlng.lng - ellipseStartLatLng.lng);
+    const points = generateEllipsePoints(ellipseStartLatLng, latRadius, lngRadius);
+    tempEllipse.setLatLngs(points);
+  }
+};
+
+const finishCustomEllipse = () => {
+  map.off('click', handleEllipseClick);
+  map.off('mousemove', handleEllipseMouseMove);
+  ellipseStartLatLng = null; tempEllipse = null; activeTool.value = null;
+  map.off('contextmenu', finishDrawing);
+};
+
 const finishDrawing = () => {
-  if (activeTool.value === 'rectangle') { if (tempRectangle) addLayerToMap(tempRectangle, 'rectangle', tempRectangle.getBounds().getCenter()); finishCustomRectangle(); return; }
-  if (currentDrawHandler && currentDrawHandler._enabled) { if (activeTool.value === 'marker') currentDrawHandler.disable(); else currentDrawHandler._finishShape(); }
-  map.off('contextmenu', finishDrawing); activeTool.value = null;
+  if (activeTool.value === 'rectangle') {
+    if (tempRectangle) addLayerToMap(tempRectangle, 'rectangle', tempRectangle.getBounds().getCenter());
+    finishCustomRectangle(); return;
+  }
+  if (activeTool.value === 'circle') {
+    if (tempCircle) addLayerToMap(tempCircle, 'circle', tempCircle.getBounds().getCenter());
+    finishCustomCircle(); return;
+  }
+  if (activeTool.value === 'ellipse') {
+    if (tempEllipse) addLayerToMap(tempEllipse, 'ellipse', tempEllipse.getBounds().getCenter());
+    finishCustomEllipse(); return;
+  }
+  if (currentDrawHandler && currentDrawHandler._enabled) {
+    if (activeTool.value === 'marker') currentDrawHandler.disable();
+    else currentDrawHandler._finishShape();
+  }
+  map.off('contextmenu', finishDrawing);
+  activeTool.value = null;
 };
+
 const toggleEditMode = () => {
-  if (activeTool.value === 'edit') { activeTool.value = null; editableLayers.eachLayer((l) => l.editing && l.editing.disable()); }
-  else { if (currentDrawHandler && currentDrawHandler._enabled) currentDrawHandler.disable(); if (tempRectangle) finishCustomRectangle(); activeTool.value = 'edit'; editableLayers.eachLayer((l) => { if (l.editing) l.editing.enable(); }); }
+  if (activeTool.value === 'edit') {
+    activeTool.value = null;
+    editableLayers.eachLayer((l) => l.editing && l.editing.disable());
+  } else {
+    if (currentDrawHandler && currentDrawHandler._enabled) currentDrawHandler.disable();
+    if (tempRectangle) finishCustomRectangle();
+    if (tempCircle) finishCustomCircle();
+    if (tempEllipse) finishCustomEllipse();
+    activeTool.value = 'edit';
+    editableLayers.eachLayer((l) => { if (l.editing) l.editing.enable(); });
+  }
 };
+
 const updateNodeStyle = (newStyle) => {
   if (selectedNode.value && selectedNode.value.layerRef) {
-    selectedNode.value.layerRef.setStyle({ color: newStyle.color, fillColor: newStyle.fillColor, fillOpacity: newStyle.fillOpacity, weight: newStyle.weight });
+    if (selectedNode.value.type === 'marker') {
+      selectedNode.value.layerRef.setIcon(getMarkerIcon(newStyle));
+    } else {
+      selectedNode.value.layerRef.setStyle({ 
+        color: newStyle.color, 
+        fillColor: newStyle.fillColor, 
+        fillOpacity: newStyle.fillOpacity, 
+        weight: newStyle.weight 
+      });
+    }
     selectedNode.value.style = { ...newStyle };
     handleLayerUpdate({ id: selectedNode.value.id, style: { ...newStyle } });
   }
 };
+
 const updateBaseOpacity = (val) => { baseOpacity.value = val; if (baseLayer) baseLayer.setOpacity(val); };
 const updateAnnoOpacity = (val) => { annoOpacity.value = val; if (annoLayer) annoLayer.setOpacity(val); };
 
@@ -326,11 +662,13 @@ const handleSearch = async (query, callback) => {
       const location = data.geocodes[0].location.split(',');
       const zoom = props.config.baseLayer.type === 'custom-canvas' ? 2 : 16;
       map.flyTo([parseFloat(location[1]), parseFloat(location[0])], zoom, { duration: 2 });
-      callback(`已定位：${data.geocodes[0].formatted_address}`);
+      callback(`已定位: ${data.geocodes[0].formatted_address}`);
     } else {
       callback('未找到相关地点。');
     }
-  } catch (error) { callback('搜索失败，请检查网络。'); }
+  } catch (error) {
+    callback('搜索失败，请检查网络。');
+  }
 };
 
 const triggerUpload = (type) => {
@@ -358,7 +696,8 @@ const handleLayerUpload = (event) => {
       } else { alert("该文件仅包含标注层，请先打开一张底图，再加载标注层！"); }
     } catch (err) { alert(err.message); }
   };
-  reader.readAsText(file); event.target.value = '';
+  reader.readAsText(file);
+  event.target.value = '';
 };
 
 const handleBothUpload = (event) => {
@@ -372,7 +711,8 @@ const handleBothUpload = (event) => {
       setTimeout(() => restoreAnnotations(data.annotations), 500);
     } catch (err) { alert(err.message); }
   };
-  reader.readAsText(file); event.target.value = '';
+  reader.readAsText(file);
+  event.target.value = '';
 };
 
 const loadBaseImage = async (imageSrc, fileObj = null, width = 0, height = 0) => {
@@ -383,18 +723,30 @@ const loadBaseImage = async (imageSrc, fileObj = null, width = 0, height = 0) =>
     currentBaseImageWidth = w; currentBaseImageHeight = h;
     if (fileObj) currentBaseImageData = await fileToBase64(fileObj);
     else currentBaseImageData = imageSrc;
+
     isCustomImageLoaded.value = true;
+
     setTimeout(() => {
       if (mapContainer.value) {
-        map = L.map(mapContainer.value, { crs: L.CRS.Simple, minZoom: -3, maxZoom: 5, zoomControl: true, attributionControl: false });
+        map = L.map(mapContainer.value, { crs: L.CRS.Simple, minZoom: -3, maxZoom: 5, zoomControl: false, attributionControl: false });
         L.DomEvent.on(mapContainer.value, 'contextmenu', L.DomEvent.preventDefault);
         const bounds = [[0, 0], [h, w]];
         baseLayer = L.imageOverlay(imageSrc, bounds, { opacity: 1 }).addTo(map);
         map.fitBounds(bounds);
+
         editableLayers = new L.FeatureGroup();
         map.addLayer(editableLayers);
         bindMapEvents();
         loadHistoricalLayers();
+
+        const savedState = localStorage.getItem(`geo_last_state_${props.config.toolId}`);
+        if (savedState) {
+          try {
+            const parsed = JSON.parse(savedState);
+            map.setView(parsed.center, parsed.zoom);
+          } catch (e) {}
+        }
+
         resizeObserver = new ResizeObserver(() => { if (map) map.invalidateSize(); });
         resizeObserver.observe(mapContainer.value);
         document.addEventListener('fullscreenchange', handleResize);
@@ -407,7 +759,10 @@ const loadBaseImage = async (imageSrc, fileObj = null, width = 0, height = 0) =>
 const resetImage = () => {
   if (map) { map.remove(); map = null; }
   isCustomImageLoaded.value = false;
-  drawnLayers.value = []; selectedNode.value = null; currentBaseImageData = null;
+  drawnLayers.value = [];
+  groups.value = ['默认'];
+  selectedNode.value = null;
+  currentBaseImageData = null;
 };
 
 const saveData = async (type) => {
@@ -428,24 +783,53 @@ const saveData = async (type) => {
 };
 
 const restoreAnnotations = (annotations) => {
-  if (!annotations || !map) return;
+  if (!annotations || !Array.isArray(annotations) || !map) return;
   annotations.forEach(item => {
+    if (!item || !item.type || !item.coords || item.coords.length === 0) {
+      console.warn('跳过无效图层:', item);
+      return;
+    }
+
     let layer = null;
-    if (item.type === 'polygon') layer = L.polygon(item.coords, item.style).addTo(map);
-    else if (item.type === 'polyline') layer = L.polyline(item.coords, item.style).addTo(map);
-    else if (item.type === 'rectangle') layer = L.rectangle(item.coords, item.style).addTo(map);
-    else if (item.type === 'marker') layer = L.marker(item.coords[0]).addTo(map);
+    try {
+      if (item.type === 'polygon' || item.type === 'circle' || item.type === 'ellipse') layer = L.polygon(item.coords, item.style).addTo(map);
+      else if (item.type === 'polyline') layer = L.polyline(item.coords, item.style).addTo(map);
+      else if (item.type === 'rectangle') layer = L.rectangle(item.coords, item.style).addTo(map);
+      else if (item.type === 'marker') {
+        const markerStyle = { ...getDefaultStyle('marker'), ...(item.style || {}) };
+        layer = L.marker(item.coords[0], { icon: getMarkerIcon(markerStyle) }).addTo(map);
+      }
+    } catch (e) {
+      console.warn('渲染单个图层失败:', item, e);
+      return;
+    }
+
     if (layer) {
       editableLayers.addLayer(layer);
       const uuid = item.id || (Date.now().toString(36) + Math.random().toString(36).substring(2, 9));
       layer.uniqueId = uuid;
+      
+      const lat = (item.coords && item.coords[0] && item.coords[0][0] !== undefined) ? item.coords[0][0] : 0;
+      const lng = (item.coords && item.coords[0] && item.coords[0][1] !== undefined) ? item.coords[0][1] : 0;
+
       const layerData = {
-        id: uuid, toolId: props.config.toolId, title: item.title, type: item.type, lat: item.coords[0][0], lng: item.coords[0][1],
-        layerRef: layer, docHtml: item.docHtml, style: item.style,
-        objectName: item.objectName || '默认名称',
-        fields: item.fields || Array.from({ length: 500 }).map((_, i) => ({ label: `信息的名称${i + 1}`, value: '' }))
+        id: uuid, toolId: props.config.toolId, title: item.title, type: item.type,
+        lat: lat, lng: lng,
+        layerRef: layer, docHtml: item.docHtml, style: item.style || {},
+        objectName: (item.objectName === '默认名称' || !item.objectName) ? '' : item.objectName,
+        group: item.group || '默认', // 🚨 核心：加载工程时恢复分组
+        fields: (item.fields || Array.from({ length: 500 })).map((f, idx) => {
+          const defaultLabel = `信息的名称${idx + 1}`;
+          return {
+            label: (f.label === defaultLabel || !f.label) ? '' : f.label,
+            value: f.value || ''
+          };
+        })
       };
       drawnLayers.value.push(layerData);
+      if (item.group && !groups.value.includes(item.group)) {
+        groups.value.push(item.group);
+      }
       layer.on('click', () => {
         const currentData = drawnLayers.value.find(d => d.id === layer.uniqueId);
         if (currentData) {
@@ -456,22 +840,126 @@ const restoreAnnotations = (annotations) => {
     }
   });
 };
+
+const getProjectData = () => {
+  const layersWithCoords = drawnLayers.value.map(item => {
+    let coords = [];
+    const layer = item.layerRef;
+    try {
+      if (item.type === 'marker') {
+        const latlng = layer.getLatLng();
+        coords = [[latlng.lat, latlng.lng]];
+      } else if (item.type === 'rectangle') {
+         const bounds = layer.getBounds();
+         const sw = bounds.getSouthWest();
+         const ne = bounds.getNorthEast();
+         coords = [[sw.lat, sw.lng], [ne.lat, ne.lng]];
+      } else {
+         const latlngs = layer.getLatLngs();
+         const flatten = (arr) => Array.isArray(arr[0]) ? arr.map(flatten).flat(1) : arr.map(pt => [pt.lat, pt.lng]);
+         coords = flatten(latlngs);
+      }
+    } catch(e) {
+      console.warn('获取坐标失败', e);
+    }
+    return {
+      ...item,
+      coords
+    };
+  });
+  
+  const rawData = buildProjectFile(props.config, map, layersWithCoords, currentBaseImageData, currentBaseImageWidth, currentBaseImageHeight);
+  rawData.groups = JSON.parse(JSON.stringify(groups.value)); // 🚨 核心：将分组列表一并打包
+  return JSON.parse(JSON.stringify(rawData));
+};
+
+const loadProjectData = async (projectData) => {
+  clearAllLayers(true); 
+  if (map) { map.remove(); map = null; }
+
+  const { baseLayer: baseCfg, mapState, layers, groups: loadedGroups } = projectData;
+  if (!baseCfg) {
+    alert('工程数据损坏：缺少底图信息！');
+    return;
+  }
+  
+  groups.value = (loadedGroups && Array.isArray(loadedGroups) && loadedGroups.length > 0) ? loadedGroups : ['默认'];
+
+  const view = props.config.initialView || { center: [39.0123, 117.3456], zoom: 15 };
+  const mapOptions = baseCfg.type === 'custom-canvas'
+    ? { crs: L.CRS.Simple, minZoom: -3, maxZoom: 5, zoomControl: false, attributionControl: false }
+    : { center: view.center, zoom: view.zoom, zoomControl: false, attributionControl: false };
+
+  map = L.map(mapContainer.value, mapOptions);
+  L.DomEvent.on(mapContainer.value, 'contextmenu', L.DomEvent.preventDefault);
+
+  if (baseCfg.type === 'custom-canvas' && baseCfg.customImage) {
+    await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const w = baseCfg.customWidth || img.naturalWidth;
+        const h = baseCfg.customHeight || img.naturalHeight;
+        currentBaseImageData = baseCfg.customImage;
+        currentBaseImageWidth = w;
+        currentBaseImageHeight = h;
+        isCustomImageLoaded.value = true;
+        const bounds = [[0, 0], [h, w]];
+        baseLayer = L.imageOverlay(baseCfg.customImage, bounds, { opacity: 1 }).addTo(map);
+        map.fitBounds(bounds);
+        resolve();
+      };
+      img.src = baseCfg.customImage;
+    });
+  } else {
+    if (baseCfg.type === 'amap-satellite' || baseCfg.type === 'amap-standard') {
+      baseLayer = L.tileLayer(baseCfg.url, { subdomains: ['1', '2', '3', '4'], maxZoom: 18, maxNativeZoom: 18 }).addTo(map);
+      if (baseCfg.annoUrl) annoLayer = L.tileLayer(baseCfg.annoUrl, { subdomains: ['1', '2', '3', '4'], maxZoom: 18, maxNativeZoom: 18 }).addTo(map);
+    } else if (baseCfg.type === 'esri-world') {
+      baseLayer = L.tileLayer(baseCfg.url, { maxZoom: 19 }).addTo(map);
+      if (baseCfg.annoUrl) annoLayer = L.tileLayer(baseCfg.annoUrl, { maxZoom: 19 }).addTo(map);
+    } else if (baseCfg.type === 'local-image') {
+      baseLayer = L.imageOverlay(baseCfg.url, baseCfg.bounds, { opacity: 1, interactive: false }).addTo(map);
+      map.fitBounds(baseCfg.bounds);
+    }
+  }
+
+  if (map && mapState && mapState.center && mapState.center.lat !== undefined) {
+    map.setView([mapState.center.lat, mapState.center.lng], mapState.zoom || 15);
+  }
+
+  editableLayers = new L.FeatureGroup();
+  map.addLayer(editableLayers);
+  bindMapEvents();
+
+  if (layers && layers.length > 0) {
+    restoreAnnotations(layers);
+  }
+
+  saveAllLayers(props.config.toolId, drawnLayers.value);
+};
+
+const saveProjectToInventoryAction = async (projectName) => {
+  const data = getProjectData();
+  data.name = projectName || `工程_${new Date().getTime()}`;
+  return await saveProjectToInventory(data);
+};
+
+defineExpose({
+  getProjectData,
+  loadProjectData,
+  saveProjectToInventory: saveProjectToInventoryAction
+});
 </script>
 
 <style scoped>
+/* 样式完全保持原样 */
 .map-wrapper { position: relative; width: 100%; height: 100%; padding: 0; margin: 0; overflow: hidden; flex: 1; background: #1a1a1a; }
 .map-container-div { width: 100%; height: 100%; background: #1a1a1a; }
-
-/* ⚠️ 核心修复：让上传界面绝对覆盖，避免高度塌陷导致的黑屏 */
-.upload-container { 
-  position: absolute; 
-  top: 0; left: 0; right: 0; bottom: 0; 
-  z-index: 999; 
-  background: #1a1a1a; 
-  display: flex; 
-  justify-content: center; 
-  align-items: center; 
-}
+.custom-zoom-control { position: absolute; top: 15px; left: 15px; z-index: 1000; display: flex; flex-direction: column; background: white; border-radius: 4px; box-shadow: 0 1px 5px rgba(0,0,0,0.4); overflow: hidden; }
+.custom-zoom-control button { width: 30px; height: 30px; border: none; background: white; font-size: 18px; font-weight: bold; color: #333; cursor: pointer; border-bottom: 1px solid #ccc; display: flex; align-items: center; justify-content: center; }
+.custom-zoom-control button:last-child { border-bottom: none; }
+.custom-zoom-control button:hover { background: #f4f4f4; }
+.upload-container { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 999; background: #1a1a1a; display: flex; justify-content: center; align-items: center; }
 .upload-box { background: #fff; padding: 40px 60px; border-radius: 10px; text-align: center; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
 .upload-box h2 { margin-top: 0; color: #333; }
 .upload-box p { color: #666; font-size: 14px; }

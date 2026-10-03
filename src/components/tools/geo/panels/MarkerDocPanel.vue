@@ -3,72 +3,106 @@
     <div v-if="node" class="doc-panel">
       <div class="doc-header">
         <div class="panel-title">📝 富文本编辑器</div>
-        <button class="close-btn" @click="$emit('close')">×</button>
+        <button class="close-btn" @click="$emit('close')">✕</button>
       </div>
 
       <div class="doc-title-bar">
         <label class="doc-title-label">文档名称：</label>
-        <input 
-          type="text" 
-          v-model="localTitle" 
-          placeholder="请输入文档名称" 
-          class="title-input"
-        />
+        <input type="text" v-model="localTitle" placeholder="请输入文档名称" class="title-input" />
       </div>
 
-      <div v-if="node.type !== 'marker'" class="style-panel">
+      <!-- 样式面板（默认折叠） -->
+      <div class="style-panel">
         <div class="style-header" @click="isStyleExpanded = !isStyleExpanded">
           <span>🎨 图形样式</span>
           <span class="toggle-icon">{{ isStyleExpanded ? '▼' : '▶' }}</span>
         </div>
         <div v-show="isStyleExpanded" class="style-body">
-          <div class="style-row">
-            <label>边框颜色</label>
-            <input type="color" :value="localStyle.color" @input="updateStyleField('color', $event.target.value)">
-          </div>
-          <div v-if="node.type === 'polygon' || node.type === 'rectangle'" class="style-row">
-            <label>填充颜色</label>
-            <input type="color" :value="localStyle.fillColor" @input="updateStyleField('fillColor', $event.target.value)">
-          </div>
-          <div v-if="node.type === 'polygon' || node.type === 'rectangle'" class="style-row">
-            <label>填充透明度</label>
-            <input type="range" min="0" max="1" step="0.05" :value="localStyle.fillOpacity" @input="updateStyleField('fillOpacity', parseFloat($event.target.value))">
-          </div>
-          <div class="style-row">
-            <label>线宽 (px)</label>
-            <input type="range" min="1" max="10" step="1" :value="localStyle.weight" @input="updateStyleField('weight', parseInt($event.target.value))">
-          </div>
+          
+          <template v-if="node.type !== 'marker'">
+            <div class="style-row">
+              <label>边框颜色</label>
+              <input type="color" :value="localStyle.color" @input="updateStyleField('color', $event.target.value)" />
+            </div>
+            <div v-if="node.type === 'polygon' || node.type === 'rectangle' || node.type === 'circle' || node.type === 'ellipse'" class="style-row">
+              <label>填充颜色</label>
+              <input type="color" :value="localStyle.fillColor" @input="updateStyleField('fillColor', $event.target.value)" />
+            </div>
+            <div v-if="node.type === 'polygon' || node.type === 'rectangle' || node.type === 'circle' || node.type === 'ellipse'" class="style-row">
+              <label>填充透明度</label>
+              <input type="range" min="0" max="1" step="0.05" :value="localStyle.fillOpacity" @input="updateStyleField('fillOpacity', parseFloat($event.target.value))" />
+            </div>
+            <div class="style-row">
+              <label>线宽 (px)</label>
+              <input type="range" min="1" max="200" step="1" :value="localStyle.weight" @input="updateStyleField('weight', parseInt($event.target.value))" />
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="style-row">
+              <label>图标颜色</label>
+              <input type="color" :value="localStyle.color || '#1890ff'" @input="updateStyleField('color', $event.target.value)" />
+            </div>
+            <div class="style-row">
+              <label>图标透明度</label>
+              <input type="range" min="0.1" max="1" step="0.1" :value="localStyle.fillOpacity !== undefined ? localStyle.fillOpacity : 1" @input="updateStyleField('fillOpacity', parseFloat($event.target.value))" />
+            </div>
+            <div class="style-row">
+              <label>图标大小 (px)</label>
+              <input type="range" min="16" max="64" step="4" :value="localStyle.iconSize || 32" @input="updateStyleField('iconSize', parseInt($event.target.value))" />
+            </div>
+            
+            <div class="icon-selector-section">
+              <label>图标样式 (20种)</label>
+              <div class="icon-grid">
+                <div 
+                  v-for="icon in MARKER_ICONS" 
+                  :key="icon.id" 
+                  class="icon-item" 
+                  :class="{ active: localStyle.iconType === icon.id }"
+                  @click="updateStyleField('iconType', icon.id)"
+                  :title="icon.name"
+                >
+                  <div v-html="getIconPreview(icon.svg)" style="width: 24px; height: 24px;"></div>
+                </div>
+              </div>
+            </div>
+          </template>
+
         </div>
       </div>
 
+      <!-- 工具栏 -->
       <div class="doc-toolbar">
         <div class="toolbar-group">
-          <button @mousedown.prevent="handleUndo" title="撤销 (Ctrl+Z)">↶ 撤销</button>
-          <button @mousedown.prevent="handleRedo" title="重做 (Ctrl+Y)">↷ 重做</button>
+          <button @mousedown.prevent="handleUndo" title="撤销 (Ctrl+Z)">↺ 撤销</button>
+          <button @mousedown.prevent="handleRedo" title="重做 (Ctrl+Y)">↻ 重做</button>
         </div>
         <div class="toolbar-divider"></div>
         <div class="toolbar-group">
-          <button @mousedown.prevent="triggerImageUpload">📷 插入图片</button>
+          <button @mousedown.prevent="triggerImageUpload">🖼 插入图片</button>
         </div>
         <span class="doc-hint">限制约 100MB</span>
         <input type="file" ref="imageInputRef" accept="image/*" style="display: none" @change="handleImageUpload" />
       </div>
 
-      <div 
-        ref="docEditorRef" 
-        class="doc-editor" 
-        contenteditable="true" 
-        placeholder="开始编写您的文档..." 
+      <!-- 编辑器区域 -->
+      <div
+        ref="docEditorRef"
+        class="doc-editor"
+        contenteditable="true"
+        placeholder="开始编写您的文档..."
       ></div>
 
+      <!-- 底部操作区 -->
       <div class="doc-actions">
         <div class="doc-footer-info">
           <p v-if="node.lat"><strong>坐标：</strong>{{ node.lat.toFixed(4) }}, {{ node.lng.toFixed(4) }}</p>
           <p><strong>类型：</strong>{{ node.type }}</p>
         </div>
         <div class="action-buttons">
-          <button class="action-btn save-btn" @click="handleSave">💾 保存文档</button>
-          <button class="action-btn export-btn" @click="handleExportDocx">📄 导出为 Word</button>
+          <button class="action-btn save-btn" @click="handleSave()">保存文档</button>
+          <button class="action-btn export-btn" @click="handleExportDocx">导出为 Word</button>
         </div>
       </div>
 
@@ -80,22 +114,24 @@
 </template>
 
 <script setup>
-import { ref, watch, nextTick } from 'vue';
+import { ref, watch, nextTick, onBeforeUnmount } from 'vue';
 import { saveDocument, getDocument } from '../../../../groups/geo/utils/documentStore.js';
+import { MARKER_ICONS } from '../../../../groups/geo/utils/markerIcons.js';
 
-const props = defineProps({ 
+const props = defineProps({
   node: { type: Object, default: null },
   toolId: { type: String, default: 'default' }
 });
 
 const emit = defineEmits(['close', 'update:title', 'update:content', 'update:style']);
-const imageInputRef = ref(null); const docEditorRef = ref(null); 
-const localTitle = ref(''); const isStyleExpanded = ref(true); 
-const localStyle = ref({ color: '#3388ff', fillColor: '#3388ff', fillOpacity: 0.2, weight: 3 });
 
+const imageInputRef = ref(null);
+const docEditorRef = ref(null);
+const localTitle = ref('');
+const isStyleExpanded = ref(false);
+const localStyle = ref({ color: '#3388ff', fillColor: '#3388ff', fillOpacity: 0.2, weight: 3, iconType: 0, iconSize: 32 });
 const showSaveToast = ref(false);
 
-// ✨ 核心修复：加入重试机制，确保 DOM 渲染完成后才赋值
 const setEditorContent = (html) => {
   if (docEditorRef.value) {
     if (html.includes('开始编写您的文档...') || html === '<p></p>' || html === '<br>') {
@@ -104,41 +140,81 @@ const setEditorContent = (html) => {
       docEditorRef.value.innerHTML = html;
     }
   } else {
-    // 如果 DOM 还没渲染出来（transition 动画影响），300ms 后重试
     setTimeout(() => setEditorContent(html), 300);
   }
 };
 
+// 🚨 核心修复：利用 watch 的 oldNode 闭包特性，在切换前安全保存旧数据，然后再加载新数据
 watch(() => props.node, async (newNode, oldNode) => {
-  // 如果 ID 相同（只是样式或父组件数据变化），不需要重新加载文档
-  if (newNode && oldNode && newNode.id === oldNode.id) {
-    return;
+  // 如果 ID 相同（只是父组件数据突变），不需要重新加载
+  if (newNode && oldNode && newNode.id === oldNode.id) return;
+
+  // 1. 切换前，精准保存旧节点数据
+  if (oldNode && docEditorRef.value) {
+    const finalTitle = localTitle.value.trim(); // 允许保存空字符串
+    let html = docEditorRef.value.innerHTML;
+    if (html === '<br>' || html === '<p><br></p>') html = '';
+
+    // 写入 IndexedDB，使用老节点的 ID
+    await saveDocument(props.toolId, oldNode.id, html);
+    
+    // 携带老节点 ID 触发更新
+    emit('update:title', { id: oldNode.id, title: finalTitle });
+    emit('update:content', { id: oldNode.id, docHtml: html });
   }
+
+  // 2. 加载新节点数据
   if (newNode) {
     const nodeId = newNode.id;
     const toolId = props.toolId;
     const title = newNode.title;
-    localTitle.value = (title === '默认名称' || title === '未命名文档') ? '' : (title || '');
-    if (newNode.style) { localStyle.value = { ...newNode.style }; }
     
-    // 从独立存储区读取内容
+    // 🚨 核心修改：直接赋值，如果为空则显示占位符
+    localTitle.value = title || '';
+    
+    if (newNode.style) {
+      localStyle.value = { 
+        color: '#1890ff', iconType: 0, iconSize: 32, fillOpacity: 1, 
+        ...newNode.style 
+      };
+    }
+
     const storedHtml = await getDocument(toolId, nodeId);
     const initialHtml = storedHtml || newNode.docHtml || '';
-    
     nextTick(() => {
       setEditorContent(initialHtml);
     });
   }
 }, { immediate: true });
 
-const updateStyleField = (field, value) => { localStyle.value[field] = value; emit('update:style', localStyle.value); };
+// 处理用户直接点击“X”关闭面板的静默自动保存
+onBeforeUnmount(async () => {
+  if (props.node && docEditorRef.value) {
+    const finalTitle = localTitle.value.trim(); // 允许保存空字符串
+    let html = docEditorRef.value.innerHTML;
+    if (html === '<br>' || html === '<p><br></p>') html = '';
+
+    await saveDocument(props.toolId, props.node.id, html);
+    emit('update:title', { id: props.node.id, title: finalTitle });
+    emit('update:content', { id: props.node.id, docHtml: html });
+  }
+});
+
+const updateStyleField = (field, value) => {
+  localStyle.value[field] = value;
+  emit('update:style', localStyle.value);
+};
+
+const getIconPreview = (svgStr) => {
+  return svgStr.replace(/#COLOR#/g, '#1890ff'); 
+};
+
 const handleUndo = () => { if (docEditorRef.value) { docEditorRef.value.focus(); document.execCommand('undo', false, null); } };
 const handleRedo = () => { if (docEditorRef.value) { docEditorRef.value.focus(); document.execCommand('redo', false, null); } };
 const triggerImageUpload = () => { imageInputRef.value.click(); };
-
 const handleImageUpload = (event) => {
   const file = event.target.files[0]; if (!file) return;
-  if (file.size > 5 * 1024 * 1024) { alert('单张图片建议不超过 5MB！'); return; }
+  if (file.size > 5 * 1024 * 1024) { alert('单张图片建议不超过 5MB!'); return; }
   const reader = new FileReader();
   reader.onload = (e) => {
     const imgTag = `<img src="${e.target.result}" style="display: block; max-width: 100%; border-radius: 2px; margin: 5px 0;" /><br/>`;
@@ -147,49 +223,40 @@ const handleImageUpload = (event) => {
   reader.readAsDataURL(file); event.target.value = '';
 };
 
-// ✨ 核心修复：使用局部变量捕获 ID，避免异步操作中被父组件突变干扰
-const handleSave = async () => {
+const handleSave = async (silent = false) => {
   if (docEditorRef.value && props.node) {
     const nodeId = props.node.id;
     const toolId = props.toolId;
-    const finalTitle = localTitle.value.trim() || '未命名文档';
-    let html = docEditorRef.value.innerHTML; 
+    const finalTitle = localTitle.value.trim(); // 允许保存空字符串
+    let html = docEditorRef.value.innerHTML;
     if (html === '<br>' || html === '<p><br></p>') html = '';
 
-    // 1. 先保存到独立文档存储区（数据库）
     await saveDocument(toolId, nodeId, html);
+    emit('update:title', { id: nodeId, title: finalTitle }); 
+    emit('update:content', { id: nodeId, docHtml: html });
 
-    // 2. 然后再更新父组件状态和界面
-    emit('update:title', finalTitle);
-    emit('update:content', html);
-
-    // 3. 轻提示
-    showSaveToast.value = true;
-    setTimeout(() => { showSaveToast.value = false; }, 1500);
+    if (!silent) {
+      showSaveToast.value = true; 
+      setTimeout(() => { showSaveToast.value = false; }, 1500);
+    }
   }
 };
 
 const handleExportDocx = () => {
   if (!docEditorRef.value) return;
   const htmlContent = docEditorRef.value.innerHTML;
-  if (!htmlContent || htmlContent === '<br>' || htmlContent === '<p><br></p>') {
-    alert('文档内容为空，无需导出！');
-    return;
-  }
+  if (!htmlContent || htmlContent === '<br>' || htmlContent === '<p><br></p>') { alert('文档内容为空，无需导出！'); return; }
   const docName = localTitle.value || '未命名文档';
-  const titleHtml = `<p style="font-size: 16px; font-weight: bold; margin-bottom: 10px;">文档名称：${docName}</p>`;
+  const titleHtml = `<p style="font-size: 16px; font-weight: bold; margin-bottom: 10px;">文档名称: ${docName}</p>`;
   const fullHtml = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset="utf-8"><title>${docName}</title></head><body>${titleHtml}${htmlContent}</body></html>`;
   const blob = new Blob([fullHtml], { type: 'application/msword' });
   const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `${docName}.doc`; 
-  link.click();
-  URL.revokeObjectURL(url);
+  const link = document.createElement('a'); link.href = url; link.download = `${docName}.doc`; link.click(); URL.revokeObjectURL(url);
 };
 </script>
 
 <style scoped>
+/* 样式完全保持原样 */
 .doc-panel { position: absolute; top: 15px; right: 15px; width: 380px; bottom: 80px; background: #fff; border-radius: 5px; box-shadow: 0 3px 10px rgba(0,0,0,0.3); z-index: 1000; display: flex; flex-direction: column; overflow: hidden; }
 .doc-header { display: flex; justify-content: space-between; align-items: center; background: #2c3e50; padding: 8px 15px; color: white; }
 .panel-title { font-size: 14px; font-weight: 600; }
@@ -202,7 +269,7 @@ const handleExportDocx = () => {
 .title-input::placeholder { color: #aaa; }
 .style-panel { background: #fafafa; border-bottom: 1px solid #ddd; }
 .style-header { display: flex; justify-content: space-between; align-items: center; padding: 5px 15px; cursor: pointer; font-size: 11px; font-weight: bold; color: #444; }
-.style-body { padding: 5px 15px; display: flex; flex-direction: column; gap: 5px; }
+.style-body { padding: 5px 15px; display: flex; flex-direction: column; gap: 5px; max-height: 250px; overflow-y: auto; }
 .style-row { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #555; }
 .style-row input[type="color"] { width: 24px; height: 16px; padding: 0; border: 1px solid #ccc; border-radius: 3px; cursor: pointer; background: none; }
 .style-row input[type="range"] { width: 90px; }
@@ -236,4 +303,10 @@ const handleExportDocx = () => {
 .slide-fade-enter-active { transition: all 0.3s ease-out; }
 .slide-fade-leave-active { transition: all 0.2s cubic-bezier(1, 0.5, 0.8, 1); }
 .slide-fade-enter-from, .slide-fade-leave-to { transform: translateX(20px); opacity: 0; }
+.icon-selector-section { margin-top: 10px; border-top: 1px dashed #eee; padding-top: 8px; }
+.icon-selector-section label { display: block; font-size: 11px; color: #555; margin-bottom: 5px; font-weight: bold; }
+.icon-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.icon-item { width: 36px; height: 36px; border: 1px solid #ddd; border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; background: #fff; transition: all 0.2s; }
+.icon-item:hover { border-color: #1890ff; background: #e6f7ff; }
+.icon-item.active { border-color: #1890ff; background: #bae0ff; box-shadow: 0 0 0 1px #1890ff; }
 </style>

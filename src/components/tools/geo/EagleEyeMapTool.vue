@@ -1,5 +1,4 @@
 <template>
-  <!-- 🚨 绑定 ref 以暴露底层能力 -->
   <BaseMapTool ref="baseMapToolRef" :config="config" />
 </template>
 
@@ -10,27 +9,16 @@ import BaseMapTool from './BaseMapTool.vue';
 const baseMapToolRef = ref(null);
 
 const config = {
-  toolId: 'geo-china-standard-map',
+  toolId: 'geo-eagle-eye', // 唯一标识，确保与“中国卫星地图”数据隔离
   baseLayer: {
-    // 保持原有的高德标准矢量地图（style=7）
-    type: 'amap-standard',
-    url: 'https://webst0{s}.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}',
-    // 保持原有的注记图层（style=8）
+    type: 'amap-satellite',
+    url: 'https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}',
     annoUrl: 'https://webst0{s}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}'
   },
   initialView: { center: [39.0123, 117.3456], zoom: 15 },
-  visibleTools: {
-    zoomControl: true,
-    drawToolbar: true,
-    markerDocPanel: true,
-    locatingPanel: true,
-    opacityPanel: true,
-    layerListPanel: true,
-    infoPanel: true
-  }
+  visibleTools: { zoomControl: true, drawToolbar: true, markerDocPanel: true, locatingPanel: true, opacityPanel: true, layerListPanel: true, infoPanel: true }
 };
 
-// 🚨 核心修改：将底层引擎方法暴露给 App.vue（文件库存）
 defineExpose({
   getProjectData: () => baseMapToolRef.value?.getProjectData(),
   loadProjectData: (data) => baseMapToolRef.value?.loadProjectData(data),

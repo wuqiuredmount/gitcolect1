@@ -1,4 +1,4 @@
-// src/utils/drawConfig.js
+// src/groups/geo/utils/drawConfig.js
 // 专门存放与绘图相关的配置，方便后续修改和中英文切换
 
 export const zhCN_DrawLocal = {
@@ -13,10 +13,11 @@ export const zhCN_DrawLocal = {
   }
 };
 
-// 颜色配置，方便统一修改
+// 颜色与线宽配置，方便统一修改
 export const drawStyles = {
   polygon: { color: '#f03', fillOpacity: 0.4, weight: 2 },
   rectangle: { color: '#ffcc00', fillOpacity: 0.4, weight: 2 },
-  polyline: { color: '#3388ff', weight: 3 },
+  // 🚨 核心修改：将折线的默认线宽从 3 改为 15（放大5倍）
+  polyline: { color: '#3388ff', weight: 15 },
   marker: { iconSize: [24, 24] }
 };
