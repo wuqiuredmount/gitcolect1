@@ -1,6 +1,9 @@
 const { app, BrowserWindow, Menu } = require('electron');
 const path = require('path');
 
+// 🚨 核心修复：设置 AppUserModelID，让 Windows 任务栏识别此应用，避免被系统强制同化
+app.setAppUserModelId('com.liangjian.app');
+
 // ================= 1. 定义全中文的原生菜单模板 =================
 const menuTemplate = [
   {
@@ -50,6 +53,8 @@ function createWindow() {
     width: 1400,
     height: 900,
     title: "良件-空间信息共享与集成",
+    // 🚨 核心修复：使用绝对路径加载图标
+    icon: path.join(__dirname, 'public', 'icon.png'), 
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false 

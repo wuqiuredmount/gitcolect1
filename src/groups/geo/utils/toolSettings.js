@@ -1,6 +1,7 @@
 // src/groups/geo/utils/toolSettings.js
 import { reactive, watch } from 'vue';
 
+// 核心：所有小工具的注册表。新增工具会自动渲染在设置弹窗中
 export const ALL_WIDGETS = [
   { key: 'zoomControl', name: '放大缩小栏', default: true },
   { key: 'drawToolbar', name: '标注编辑区', default: true },
@@ -8,7 +9,10 @@ export const ALL_WIDGETS = [
   { key: 'locatingPanel', name: '定位查找面板', default: true },
   { key: 'infoPanel', name: '信息栏面板', default: true },
   { key: 'layerListPanel', name: '图形列表面板', default: true },
-  { key: 'opacityPanel', name: '图层透明度面板', default: true }
+  { key: 'opacityPanel', name: '图层透明度面板', default: true },
+  // 🚨 新增两个全局通用工具
+  { key: 'resetCenter', name: '回到底图中心点', default: true },
+  { key: 'zoomPercent', name: '缩放倍数（20%-5000%）', default: true }
 ];
 
 const STORAGE_KEY = 'liangjian_tool_widget_settings';
@@ -45,7 +49,7 @@ export const DEFAULT_STYLES = {
   polyline: { color: '#3388ff', weight: 15 },
   circle: { color: '#3388ff', fillColor: '#3388ff', fillOpacity: 0.2, weight: 2 },
   ellipse: { color: '#3388ff', fillColor: '#3388ff', fillOpacity: 0.2, weight: 2 },
-  marker: { color: '#1890ff', iconType: 0, iconSize: 32, fillOpacity: 1 } // 🚨 核心：增加 iconType 默认值
+  marker: { color: '#1890ff', iconType: 0, iconSize: 32, fillOpacity: 1 }
 };
 
 const STORAGE_KEY_STYLES = 'liangjian_default_styles';

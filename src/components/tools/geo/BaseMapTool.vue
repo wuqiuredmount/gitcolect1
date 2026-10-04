@@ -1,12 +1,23 @@
 <template>
   <div class="map-wrapper">
-    <div ref="mapContainer" class="map-container-div"></div>
+    <div ref="mapContainer" class="map-container-div" :class="{ 'white-canvas-bg': config.baseLayer.type === 'infinite-white' }"></div>
 
+    <!-- 放大缩小栏 -->
     <div v-if="finalVisibleTools.zoomControl" class="custom-zoom-control">
       <button @click="map?.zoomIn()" title="放大">+</button>
       <button @click="map?.zoomOut()" title="缩小">-</button>
     </div>
 
+    <!-- 回中心点与缩放倍数控制区 -->
+    <div v-if="finalVisibleTools.resetCenter || finalVisibleTools.zoomPercent" class="custom-bottom-toolbar">
+      <button v-if="finalVisibleTools.resetCenter" @click="resetToCenter" title="回到底图中心点" class="reset-center-btn">🎯</button>
+      <div v-if="finalVisibleTools.zoomPercent" class="zoom-percent-control">
+        <span class="zoom-percent-label">{{ zoomLevelPercent }}%</span>
+        <input type="range" min="20" max="5000" v-model.number="zoomLevelPercent" @input="handleZoomPercentChange" class="zoom-percent-slider" />
+      </div>
+    </div>
+
+    <!-- 自定义画布上传界面 -->
     <div v-if="config.baseLayer.type === 'custom-canvas' && !isCustomImageLoaded" class="upload-container">
       <div class="upload-box">
         <h2>自定义底图 + 自由标记</h2>
@@ -24,6 +35,7 @@
     </div>
 
     <template v-if="config.baseLayer.type !== 'custom-canvas' || isCustomImageLoaded">
+      <!-- 绘图工具栏 -->
       <div v-if="finalVisibleTools.drawToolbar" class="custom-toolbar" :data-tool-id="'draw-' + config.toolId">
         <button :class="{ active: activeTool === 'polygon' }" @click="startDrawing('polygon')" title="绘制多边形"> ⬠ </button>
         <button :class="{ active: activeTool === 'polyline' }" @click="startDrawing('polyline')" title="绘制折线"> 📈 </button>
@@ -40,6 +52,7 @@
         <button v-if="config.baseLayer.type === 'custom-canvas'" @click="resetImage" title="重新选择图片"> 🔄 </button>
       </div>
 
+      <!-- 图形列表 Teleport -->
       <Teleport to="#tool-header-slot">
         <LayerListPanel 
           v-if="finalVisibleTools.layerListPanel" 
@@ -53,6 +66,7 @@
         />
       </Teleport>
 
+      <!-- 其他面板 -->
       <LocatingPanel v-if="finalVisibleTools.locatingPanel" :panel-id="'locating-' + config.toolId" @search="handleSearch" />
       <OpacityPanel v-if="finalVisibleTools.opacityPanel" :panel-id="'opacity-' + config.toolId" :baseOpacity="baseOpacity" :annoOpacity="annoOpacity" :showAnno="config.baseLayer.annoUrl ? true : false" @update:base="updateBaseOpacity" @update:anno="updateAnnoOpacity" />
       <InfoPanel v-if="finalVisibleTools.infoPanel" ref="infoPanelRef" :tool-id="config.toolId" :layers="drawnLayers" @locate="flyToLayer" @update-layer="handleLayerUpdate" />
@@ -67,6 +81,7 @@
         @update:style="val => updateNodeStyle(val)" 
       />
 
+      <!-- 自定义画布保存工具栏 -->
       <div v-if="config.baseLayer.type === 'custom-canvas'" class="save-toolbar">
         <button @click="saveData('base')">保存底图</button>
         <button @click="saveData('layer')">保存标注层</button>
@@ -107,7 +122,7 @@ const props = defineProps({
       toolId: 'geo-default',
       baseLayer: { type: 'amap-satellite', url: '', annoUrl: '' },
       initialView: { center: [39.0123, 117.3456], zoom: 15 },
-      visibleTools: { zoomControl: true, drawToolbar: true, markerDocPanel: true, locatingPanel: true, opacityPanel: true, layerListPanel: true, infoPanel: true }
+      visibleTools: { zoomControl: true, drawToolbar: true, markerDocPanel: true, locatingPanel: true, opacityPanel: true, layerListPanel: true, infoPanel: true, resetCenter: true, zoomPercent: true }
     })
   }
 });
@@ -139,12 +154,17 @@ let currentBaseImageData = null;
 let currentBaseImageWidth = 0;
 let currentBaseImageHeight = 0;
 
+// 🚨 新增：初始视图记录 & 缩放百分比状态
+let defaultCenter = [39.0123, 117.3456];
+let defaultZoom = 15;
+const zoomLevelPercent = ref(100);
+
 const selectedNode = ref(null);
 const baseOpacity = ref(1);
 const annoOpacity = ref(1);
 const activeTool = ref(null);
 const drawnLayers = ref([]);
-const groups = ref(['默认']); // 🚨 核心：独立的分组数据源
+const groups = ref(['默认']);
 const isCustomImageLoaded = ref(false);
 const AMAP_KEY = '69d86725ca981d56159af949ce2a68ec';
 
@@ -192,6 +212,20 @@ const generateEllipsePoints = (center, latRadius, lngRadius, numPoints = 64) => 
   return points;
 };
 
+// 🚨 新增：缩放百分比控制逻辑
+const handleZoomPercentChange = () => {
+  if (!map) return;
+  // 将百分比转化为 Leaflet 缩放级别，公式基于缩放级别与倍数的指数关系
+  const zoom = Math.log2(zoomLevelPercent.value / 100);
+  map.setZoom(zoom);
+};
+
+// 🚨 新增：回到底图中心点
+const resetToCenter = () => {
+  if (!map) return;
+  map.flyTo(defaultCenter, defaultZoom, { duration: 1.5 });
+};
+
 const handleMoveEnd = () => {
   if (map) {
     const state = {
@@ -202,6 +236,13 @@ const handleMoveEnd = () => {
   }
 };
 
+// 🚨 新增：监听地图缩放，反向更新百分比滑块
+const handleZoomEnd = () => {
+  if (!map) return;
+  const zoom = map.getZoom();
+  zoomLevelPercent.value = Math.round(100 * Math.pow(2, zoom));
+};
+
 const initMap = () => {
   if (!mapContainer.value) return;
   if (map) { map.remove(); }
@@ -209,22 +250,35 @@ const initMap = () => {
   const view = props.config.initialView || { center: [39.0123, 117.3456], zoom: 15 };
   const baseCfg = props.config.baseLayer;
 
-  const mapOptions = baseCfg.type === 'custom-canvas'
-    ? { crs: L.CRS.Simple, minZoom: -3, maxZoom: 5, zoomControl: false, attributionControl: false }
+  // 🚨 核心修复：无限白色画布使用 CRS.Simple 并设置明确的初始视图
+  const mapOptions = (baseCfg.type === 'custom-canvas')
+    ? { crs: L.CRS.Simple, minZoom: -5, maxZoom: 10, zoomControl: false, attributionControl: false }
+    : baseCfg.type === 'infinite-white'
+    ? { crs: L.CRS.Simple, minZoom: -5, maxZoom: 10, zoomControl: false, attributionControl: false, center: [0, 0], zoom: 1 }
     : { center: view.center, zoom: view.zoom, zoomControl: false, attributionControl: false };
 
   map = L.map(mapContainer.value, mapOptions);
   L.DomEvent.on(mapContainer.value, 'contextmenu', L.DomEvent.preventDefault);
+
+  // 记录初始视图
+  defaultCenter = [map.getCenter().lat, map.getCenter().lng];
+  defaultZoom = map.getZoom();
 
   const savedState = localStorage.getItem(`geo_last_state_${props.config.toolId}`);
   if (savedState) {
     try {
       const parsed = JSON.parse(savedState);
       map.setView(parsed.center, parsed.zoom);
+      // 更新默认视图为上次离开的位置，满足“回到底图中心点”的需求
+      defaultCenter = [map.getCenter().lat, map.getCenter().lng];
+      defaultZoom = map.getZoom();
     } catch (e) {}
   }
 
-  if (baseCfg.type === 'amap-satellite' || baseCfg.type === 'amap-standard') {
+  // 处理底图
+  if (baseCfg.type === 'infinite-white') {
+    // 纯白背景，无需加载贴图
+  } else if (baseCfg.type === 'amap-satellite' || baseCfg.type === 'amap-standard') {
     baseLayer = L.tileLayer(baseCfg.url, { subdomains: ['1', '2', '3', '4'], maxZoom: 18, maxNativeZoom: 18 }).addTo(map);
     if (baseCfg.annoUrl) annoLayer = L.tileLayer(baseCfg.annoUrl, { subdomains: ['1', '2', '3', '4'], maxZoom: 18, maxNativeZoom: 18 }).addTo(map);
   } else if (baseCfg.type === 'esri-world') {
@@ -240,13 +294,19 @@ const initMap = () => {
   bindMapEvents();
   loadHistoricalLayers();
 
+  // 绑定缩放事件
+  map.on('zoomend', handleZoomEnd);
+  // 初始化时同步一次百分比
+  handleZoomEnd();
+
   resizeObserver = new ResizeObserver(() => { if (map) map.invalidateSize(); });
   resizeObserver.observe(mapContainer.value);
   document.addEventListener('fullscreenchange', handleResize);
 };
 
+// 🚨 核心修复：放行 infinite-white 的初始化
 onMounted(() => {
-  if (props.config.baseLayer.type === 'custom-canvas') return;
+  if (props.config.baseLayer.type === 'custom-canvas') return; // 自定义画布需等待用户上传图片
   initMap();
 
   L.Marker.prototype.options.icon = getMarkerIcon(getDefaultStyle('marker'));
@@ -350,7 +410,7 @@ const addLayerToMap = (layer, type, latlng) => {
     lat: latlng ? latlng.lat : 0, lng: latlng ? latlng.lng : 0,
     layerRef: layer, docHtml: '', 
     objectName: '', 
-    group: '默认', // 🚨 核心：初始化分组为默认
+    group: '默认',
     fields: Array.from({ length: 500 }).map(() => ({ label: '', value: '' })),
     style: defaultStyle
   };
@@ -390,7 +450,6 @@ const handleLayerUpdate = (updatedLayer) => {
   }
 };
 
-// 🚨 核心：接收来自列表的分组变更
 const handleUpdateLayerGroup = ({ id, group }) => {
   const index = drawnLayers.value.findIndex(l => l.id === id);
   if (index !== -1) {
@@ -402,14 +461,12 @@ const handleUpdateLayerGroup = ({ id, group }) => {
   }
 };
 
-// 🚨 核心：新增分组（即使没有图形）
 const handleAddGroup = (groupName) => {
   if (groupName && !groups.value.includes(groupName)) {
     groups.value.push(groupName);
   }
 };
 
-// 🚨 核心：删除分组
 const handleRemoveGroup = (groupName) => {
   groups.value = groups.value.filter(g => g !== groupName);
   let hasChange = false;
@@ -460,7 +517,7 @@ const handleDocContentUpdate = (payload) => {
 
 const flyToLayer = (item) => {
   if (item.lat && item.lng && map) {
-    const zoom = props.config.baseLayer.type === 'custom-canvas' ? 2 : 16;
+    const zoom = props.config.baseLayer.type === 'custom-canvas' || props.config.baseLayer.type === 'infinite-white' ? 2 : 16;
     map.flyTo([item.lat, item.lng], zoom, { duration: 1.5 });
     if (item.layerRef) item.layerRef.fire('click');
   }
@@ -660,7 +717,7 @@ const handleSearch = async (query, callback) => {
     const data = await res.json();
     if (data.status === '1' && data.geocodes && data.geocodes.length > 0) {
       const location = data.geocodes[0].location.split(',');
-      const zoom = props.config.baseLayer.type === 'custom-canvas' ? 2 : 16;
+      const zoom = props.config.baseLayer.type === 'custom-canvas' || props.config.baseLayer.type === 'infinite-white' ? 2 : 16;
       map.flyTo([parseFloat(location[1]), parseFloat(location[0])], zoom, { duration: 2 });
       callback(`已定位: ${data.geocodes[0].formatted_address}`);
     } else {
@@ -734,16 +791,24 @@ const loadBaseImage = async (imageSrc, fileObj = null, width = 0, height = 0) =>
         baseLayer = L.imageOverlay(imageSrc, bounds, { opacity: 1 }).addTo(map);
         map.fitBounds(bounds);
 
+        // 记录初始视图
+        defaultCenter = [map.getCenter().lat, map.getCenter().lng];
+        defaultZoom = map.getZoom();
+
         editableLayers = new L.FeatureGroup();
         map.addLayer(editableLayers);
         bindMapEvents();
         loadHistoricalLayers();
+        map.on('zoomend', handleZoomEnd);
+        handleZoomEnd();
 
         const savedState = localStorage.getItem(`geo_last_state_${props.config.toolId}`);
         if (savedState) {
           try {
             const parsed = JSON.parse(savedState);
             map.setView(parsed.center, parsed.zoom);
+            defaultCenter = [map.getCenter().lat, map.getCenter().lng];
+            defaultZoom = map.getZoom();
           } catch (e) {}
         }
 
@@ -817,7 +882,7 @@ const restoreAnnotations = (annotations) => {
         lat: lat, lng: lng,
         layerRef: layer, docHtml: item.docHtml, style: item.style || {},
         objectName: (item.objectName === '默认名称' || !item.objectName) ? '' : item.objectName,
-        group: item.group || '默认', // 🚨 核心：加载工程时恢复分组
+        group: item.group || '默认',
         fields: (item.fields || Array.from({ length: 500 })).map((f, idx) => {
           const defaultLabel = `信息的名称${idx + 1}`;
           return {
@@ -869,7 +934,7 @@ const getProjectData = () => {
   });
   
   const rawData = buildProjectFile(props.config, map, layersWithCoords, currentBaseImageData, currentBaseImageWidth, currentBaseImageHeight);
-  rawData.groups = JSON.parse(JSON.stringify(groups.value)); // 🚨 核心：将分组列表一并打包
+  rawData.groups = JSON.parse(JSON.stringify(groups.value));
   return JSON.parse(JSON.stringify(rawData));
 };
 
@@ -886,14 +951,24 @@ const loadProjectData = async (projectData) => {
   groups.value = (loadedGroups && Array.isArray(loadedGroups) && loadedGroups.length > 0) ? loadedGroups : ['默认'];
 
   const view = props.config.initialView || { center: [39.0123, 117.3456], zoom: 15 };
-  const mapOptions = baseCfg.type === 'custom-canvas'
-    ? { crs: L.CRS.Simple, minZoom: -3, maxZoom: 5, zoomControl: false, attributionControl: false }
+  
+  // 🚨 核心修复：loadProjectData 同样需要显式设置 infinite-white 的初始视图
+  const mapOptions = (baseCfg.type === 'custom-canvas')
+    ? { crs: L.CRS.Simple, minZoom: -5, maxZoom: 10, zoomControl: false, attributionControl: false }
+    : baseCfg.type === 'infinite-white'
+    ? { crs: L.CRS.Simple, minZoom: -5, maxZoom: 10, zoomControl: false, attributionControl: false, center: [0, 0], zoom: 1 }
     : { center: view.center, zoom: view.zoom, zoomControl: false, attributionControl: false };
 
   map = L.map(mapContainer.value, mapOptions);
   L.DomEvent.on(mapContainer.value, 'contextmenu', L.DomEvent.preventDefault);
 
-  if (baseCfg.type === 'custom-canvas' && baseCfg.customImage) {
+  // 记录初始视图
+  defaultCenter = [map.getCenter().lat, map.getCenter().lng];
+  defaultZoom = map.getZoom();
+
+  if (baseCfg.type === 'infinite-white') {
+    // 无需加载任何贴图
+  } else if (baseCfg.type === 'custom-canvas' && baseCfg.customImage) {
     await new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
@@ -906,6 +981,8 @@ const loadProjectData = async (projectData) => {
         const bounds = [[0, 0], [h, w]];
         baseLayer = L.imageOverlay(baseCfg.customImage, bounds, { opacity: 1 }).addTo(map);
         map.fitBounds(bounds);
+        defaultCenter = [map.getCenter().lat, map.getCenter().lng];
+        defaultZoom = map.getZoom();
         resolve();
       };
       img.src = baseCfg.customImage;
@@ -920,16 +997,22 @@ const loadProjectData = async (projectData) => {
     } else if (baseCfg.type === 'local-image') {
       baseLayer = L.imageOverlay(baseCfg.url, baseCfg.bounds, { opacity: 1, interactive: false }).addTo(map);
       map.fitBounds(baseCfg.bounds);
+      defaultCenter = [map.getCenter().lat, map.getCenter().lng];
+      defaultZoom = map.getZoom();
     }
   }
 
   if (map && mapState && mapState.center && mapState.center.lat !== undefined) {
     map.setView([mapState.center.lat, mapState.center.lng], mapState.zoom || 15);
+    defaultCenter = [map.getCenter().lat, map.getCenter().lng];
+    defaultZoom = map.getZoom();
   }
 
   editableLayers = new L.FeatureGroup();
   map.addLayer(editableLayers);
   bindMapEvents();
+  map.on('zoomend', handleZoomEnd);
+  handleZoomEnd();
 
   if (layers && layers.length > 0) {
     restoreAnnotations(layers);
@@ -955,10 +1038,63 @@ defineExpose({
 /* 样式完全保持原样 */
 .map-wrapper { position: relative; width: 100%; height: 100%; padding: 0; margin: 0; overflow: hidden; flex: 1; background: #1a1a1a; }
 .map-container-div { width: 100%; height: 100%; background: #1a1a1a; }
+
+/* 🚨 无限白色画布专用背景色 */
+.white-canvas-bg {
+  background: #ffffff !important;
+}
+
 .custom-zoom-control { position: absolute; top: 15px; left: 15px; z-index: 1000; display: flex; flex-direction: column; background: white; border-radius: 4px; box-shadow: 0 1px 5px rgba(0,0,0,0.4); overflow: hidden; }
 .custom-zoom-control button { width: 30px; height: 30px; border: none; background: white; font-size: 18px; font-weight: bold; color: #333; cursor: pointer; border-bottom: 1px solid #ccc; display: flex; align-items: center; justify-content: center; }
 .custom-zoom-control button:last-child { border-bottom: none; }
 .custom-zoom-control button:hover { background: #f4f4f4; }
+
+/* 🚨 回中心点与缩放倍数控制区样式 */
+.custom-bottom-toolbar {
+  position: absolute;
+  bottom: 15px;
+  left: 15px;
+  z-index: 1050;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.95);
+  padding: 10px;
+  border-radius: 5px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+}
+.reset-center-btn {
+  width: 30px;
+  height: 30px;
+  border: none;
+  background: #f0f0f0;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: 0.2s;
+  color: #333;
+}
+.reset-center-btn:hover { background: #e6f7ff; border-color: #1890ff; color: #1890ff; }
+.zoom-percent-control {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #333;
+}
+.zoom-percent-slider {
+  width: 100px;
+  cursor: pointer;
+}
+.zoom-percent-label {
+  font-weight: bold;
+  color: #1890ff;
+}
+
 .upload-container { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 999; background: #1a1a1a; display: flex; justify-content: center; align-items: center; }
 .upload-box { background: #fff; padding: 40px 60px; border-radius: 10px; text-align: center; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
 .upload-box h2 { margin-top: 0; color: #333; }

@@ -1,4 +1,10 @@
 <template>
+  <!-- 🚨 核心新增：1秒启动界面 -->
+  <div v-if="isLoading" class="splash-screen">
+    <img src="/splash.jpg" alt="Loading..." />
+  </div>
+
+  <!-- 以下是您原有的完整代码，原封不动 -->
   <div class="app-container">
     <!-- 顶部标题栏 -->
     <header class="title-bar">
@@ -42,13 +48,11 @@
         </div>
 
         <div v-if="currentTool" class="active-tool">
-          <!-- 🚨 核心修复：先渲染 header，其中的 tool-header-slot 将成为图形列表的挂载目标 -->
           <div class="active-tool-header" id="tool-header">
             <span class="active-tool-name">{{ currentTool.name }}</span>
             <div id="tool-header-slot" class="header-slot"></div>
             <button class="back-btn" @click="currentTool = null"> - 关闭工具</button>
           </div>
-          <!-- 🚨 核心修复：等 header-slot 在 DOM 中存在后，再挂载 BaseMapTool 组件，确保 Teleport 能找到目标 -->
           <div class="tool-content" v-if="isHeaderReady">
             <component :is="currentTool.component" ref="toolContentRef" />
           </div>
@@ -221,13 +225,14 @@
 </template>
 
 <script setup>
-import { ref, shallowRef, markRaw, computed, reactive, watch, nextTick } from 'vue';
+import { ref, shallowRef, markRaw, computed, reactive, watch, nextTick, onMounted } from 'vue';
 import ChinaMapTool from './components/tools/geo/ChinaMapTool.vue';
 import WorldMapTool from './components/tools/geo/WorldMapTool.vue';
 import ChinaProvinceMapTool from './components/tools/geo/ChinaProvinceMapTool.vue';
 import CustomCanvasTool from './components/tools/geo/CustomCanvasTool.vue';
 import ChinaStandardMapTool from './components/tools/geo/ChinaStandardMapTool.vue';
 import EagleEyeMapTool from './components/tools/geo/EagleEyeMapTool.vue';
+import InfiniteCanvasTool from './components/tools/geo/InfiniteCanvasTool.vue';
 
 import { globalToolSettings, ALL_WIDGETS, initToolSettings, globalDefaultStyles } from './groups/geo/utils/toolSettings';
 import { MARKER_ICONS } from './groups/geo/utils/markerIcons';
@@ -240,7 +245,15 @@ const currentGroupId = ref('geo');
 const isAboutOpen = ref(false);
 const isSettingsOpen = ref(false);
 const isInventoryOpen = ref(false);
-const isHeaderReady = ref(false); // 🚨 核心修复：控制 BaseMapTool 的挂载时机
+const isHeaderReady = ref(false);
+
+// 🚨 核心新增：启动界面状态
+const isLoading = ref(true);
+onMounted(() => {
+  setTimeout(() => {
+    isLoading.value = false;
+  }, 1000); // 1秒后关闭启动界面
+});
 
 const toolContentRef = ref(null);
 const projectInputRef = ref(null);
@@ -299,7 +312,8 @@ const groups = ref([
       { id: 'geo-china-map', name: '3. 中国卫星地图信息分布空间', component: markRaw(ChinaMapTool) },
       { id: 'geo-world-map', name: '4. 世界卫星地图信息分布空间', component: markRaw(WorldMapTool) },
       { id: 'geo-china-standard-map', name: '5. 中国标准地图信息分布空间', component: markRaw(ChinaStandardMapTool) },
-      { id: 'geo-province-map', name: '6. 中国省级行政区信息分布空间', component: markRaw(ChinaProvinceMapTool) }
+      { id: 'geo-province-map', name: '6. 中国省级行政区信息分布空间', component: markRaw(ChinaProvinceMapTool) },
+      { id: 'geo-infinite-canvas', name: '7. 无限白色画布', component: markRaw(InfiniteCanvasTool) }
     ]
   },
   {
@@ -338,12 +352,10 @@ const openTool = (tool) => {
   if (tool.component) currentTool.value = tool;
 };
 
-// 🚨 核心修复：监听 currentTool，等 header-slot 在 DOM 中渲染完毕后再挂载 BaseMapTool
 watch(currentTool, async (val) => {
   if (val) {
     isHeaderReady.value = false;
-    await nextTick(); // 等待 header-slot 渲染到 DOM
-    // 使用 setTimeout 0 确保浏览器已完成一次渲染循环，Teleport 能找到目标
+    await nextTick(); 
     setTimeout(() => {
       isHeaderReady.value = true;
     }, 0);
@@ -548,7 +560,26 @@ const exportWordOnly = (proj) => {
 </script>
 
 <style scoped>
-/* 全局样式完全保持原样 */
+/* 🚨 核心新增：启动界面样式 */
+.splash-screen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 99999;
+  background-color: #000;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.splash-screen img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+/* 以下是原有的所有样式，保持原样 */
 .app-container { display: flex; flex-direction: column; height: 100vh; background-color: #f0f2f5; color: #1f2937; font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; margin: 0; overflow: hidden; }
 .title-bar { display: flex; justify-content: space-between; align-items: center; padding: 0 20px; height: 50px; background: #ffffff; border-bottom: 1px solid #e5e7eb; box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); z-index: 100; }
 .title { font-size: 15px; font-weight: 600; color: #1f2937; }
@@ -587,7 +618,6 @@ const exportWordOnly = (proj) => {
 .welcome-icon { margin-bottom: 16px; display: flex; align-items: center; justify-content: center; }
 .welcome-screen p { font-size: 16px; }
 .active-tool { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #fff; }
-/* 🚨 调整 header 样式，使其能够容纳右侧的传送内容 */
 .active-tool-header { display: flex; align-items: center; justify-content: space-between; padding: 0 20px; height: 50px; background: #ffffff; border-bottom: 1px solid #e5e7eb; position: relative; }
 .active-tool-name { font-size: 15px; font-weight: 600; color: #1f2937; white-space: nowrap; margin-right: 15px; }
 .header-slot { flex: 1; display: flex; align-items: center; }
