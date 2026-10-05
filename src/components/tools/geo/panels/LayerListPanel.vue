@@ -3,9 +3,13 @@
     <!-- 顶层操作栏 -->
     <div class="top-actions">
       <button class="dropdown-toggle-btn" @click="isExpanded = !isExpanded">
-        📋 图形列表 ({{ layers.length }}) {{ isExpanded ? '▲' : '▼' }}
+        图形列表（{{ layers.length }}）{{ isExpanded ? '▲' : '▼' }}
       </button>
-      <button class="group-btn" @click="openEditGroupModal" title="编辑分组">⚙️</button>
+      <!-- 🚨 核心修改：给齿轮按钮加上固定显示的文本 -->
+      <button class="group-btn" @click="openEditGroupModal" title="编辑分组">
+        <span class="btn-icon">⚙️</span>
+        <span class="btn-text">探索和编辑分组</span>
+      </button>
       <select v-model="activeGroupFilter" class="group-filter-select" title="查看分组">
         <option value="全部">全部</option>
         <option v-for="g in groups" :key="g" :value="g">{{ g }}</option>
@@ -15,15 +19,8 @@
     <!-- 展开的列表面板 -->
     <div v-show="isExpanded" class="dropdown-panel">
       <div class="panel-header-actions">
-        <input 
-          type="text" 
-          v-model="searchQuery" 
-          placeholder="输入名称检索..." 
-          class="search-input"
-        />
-        <button class="fav-open-btn" @click="isFavModalOpen = true" title="打开收藏夹">
-          ⭐ 收藏夹
-        </button>
+        <input type="text" v-model="searchQuery" placeholder="输入名称检索..." class="search-input" />
+        <button class="fav-open-btn" @click="isFavModalOpen = true" title="打开收藏夹"> ★ 收藏夹 </button>
       </div>
 
       <!-- 图形列表区 -->
@@ -37,9 +34,9 @@
             </button>
             <span class="layer-type">{{ item.type }}</span>
           </div>
-          <button 
-            class="star-btn" 
-            :class="{ 'active': isFavorite(item.id) }" 
+          <button
+            class="star-btn"
+            :class="{ 'active': isFavorite(item.id) }"
             @click.stop="toggleFavorite(item.id)"
             :title="isFavorite(item.id) ? '取消收藏' : '加入收藏'"
           >
@@ -72,8 +69,8 @@
     <div v-if="isEditGroupOpen" class="fav-modal-overlay" @click.self="isEditGroupOpen = false">
       <div class="fav-modal-content" style="width: 350px;">
         <div class="fav-modal-header">
-          <h3>⚙️ 编辑分组</h3>
-          <button class="close-btn" @click="isEditGroupOpen = false">✕</button>
+          <h3> 编辑分组</h3>
+          <button class="close-btn" @click="isEditGroupOpen = false">x</button>
         </div>
         <div class="fav-modal-body">
           <div class="group-edit-row">
@@ -83,7 +80,7 @@
           <ul class="group-edit-list">
             <li v-for="(g, idx) in groups" :key="g">
               <span>{{ g }}</span>
-              <button v-if="g !== '默认'" @click="removeGroup(g)" class="del-btn">删除</button>
+              <button v-if="g != '默认'" @click="removeGroup(g)" class="del-btn">删除</button>
             </li>
           </ul>
         </div>
@@ -94,19 +91,19 @@
     <div v-if="isFavModalOpen" class="fav-modal-overlay" @click.self="isFavModalOpen = false">
       <div class="fav-modal-content">
         <div class="fav-modal-header">
-          <h3>⭐ 我的收藏夹</h3>
-          <button class="close-btn" @click="isFavModalOpen = false">✕</button>
+          <h3> 我的收藏夹</h3>
+          <button class="close-btn" @click="isFavModalOpen = false">x</button>
         </div>
         <div class="fav-modal-body">
           <ul v-if="favoriteLayers.length > 0" class="fav-list">
             <li v-for="item in favoriteLayers" :key="item.id">
-              <span class="fav-title">{{ item.title || '未命名图形' }}</span>
+              <span class="fav-title">{{ item.title || '未命名图形' }} </span>
               <button class="go-here-btn" @click="goToFavorite(item)">去这里</button>
             </li>
           </ul>
           <div v-else class="fav-empty">
             <p>还没有收藏任何图形</p>
-            <p class="hint">点击列表旁的 ☆ 按钮即可收藏</p>
+            <p class="hint">点击列表旁的☆按钮即可收藏</p>
           </div>
         </div>
       </div>
@@ -117,9 +114,9 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
 
-const props = defineProps({ 
+const props = defineProps({
   layers: { type: Array, default: () => [] },
-  groups: { type: Array, default: () => ['默认'] } // 🚨 核心：接收父组件传来的分组数据
+  groups: { type: Array, default: () => ['默认'] } // 核心：接收父组件传来的分组数据
 });
 const emit = defineEmits(['locate', 'add-group', 'remove-group', 'update-layer-group']);
 
@@ -139,7 +136,7 @@ const toggleFavorite = (id) => {
   else favoriteIds.value.push(id);
 };
 
-// 🚨 核心：直接使用父组件的分组列表进行过滤
+// 核心：直接使用父组件的分组列表进行过滤
 const activeGroupFilter = ref('全部');
 const isAssignGroupOpen = ref(false);
 const selectedLayerForGroup = ref(null);
@@ -148,7 +145,7 @@ const newGroupName = ref('');
 
 const openEditGroupModal = () => { isEditGroupOpen.value = true; };
 
-// 🚨 核心：通过 emit 触发父组件新建分组
+// 核心：通过 emit 触发父组件新建分组
 const addGroup = () => {
   const name = newGroupName.value.trim();
   if (name) {
@@ -157,7 +154,7 @@ const addGroup = () => {
   }
 };
 
-// 🚨 核心：通过 emit 触发父组件删除分组
+// 核心：通过 emit 触发父组件删除分组
 const removeGroup = (name) => {
   emit('remove-group', name);
 };
@@ -167,7 +164,7 @@ const openAssignGroup = (item) => {
   isAssignGroupOpen.value = true;
 };
 
-// 🚨 核心：通过 emit 触发父组件更新图形分组
+// 核心：通过 emit 触发父组件更新图形分组
 const assignGroupToLayer = (groupName) => {
   if (selectedLayerForGroup.value) {
     emit('update-layer-group', { id: selectedLayerForGroup.value.id, group: groupName });
@@ -209,41 +206,48 @@ const goToFavorite = (item) => {
 .dropdown-toggle-btn { padding: 4px 12px; font-size: 12px; background: #f0f0f0; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; white-space: nowrap; transition: 0.2s; color: #333; height: 28px; box-sizing: border-box; }
 .dropdown-toggle-btn:hover { background: #e6f7ff; border-color: #1890ff; color: #1890ff; }
 
-.group-btn { padding: 0 8px; font-size: 14px; background: #f0f0f0; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; height: 28px; box-sizing: border-box; line-height: 26px; }
+/* 🚨 修改：包含图标和文字的分组按钮样式 */
+.group-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  font-size: 13px;
+  background: #f0f0f0;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  height: 28px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  transition: 0.2s;
+  color: #333;
+}
 .group-btn:hover { background: #e6f7ff; border-color: #1890ff; }
+.group-btn .btn-icon { font-size: 14px; }
+.group-btn .btn-text { font-weight: 500; }
 
 .group-filter-select { padding: 0 4px; font-size: 12px; background: #f0f0f0; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; height: 28px; box-sizing: border-box; outline: none; color: #333; max-width: 80px; }
 
 .dropdown-panel { position: absolute; top: 100%; left: 0; margin-top: 5px; width: 340px; max-height: 450px; background: #fff; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); border: 1px solid #e5e7eb; display: flex; flex-direction: column; z-index: 1000; overflow: hidden; }
-
 .panel-header-actions { display: flex; align-items: center; gap: 5px; padding: 8px 10px; border-bottom: 1px solid #eee; background: #f8f9fa; }
-
 .search-input { flex: 1; padding: 4px 6px; font-size: 11px; border: 1px solid #ccc; border-radius: 3px; outline: none; box-sizing: border-box; }
 .search-input:focus { border-color: #1890ff; }
-
 .fav-open-btn { padding: 4px 8px; font-size: 11px; background: #fff; border: 1px solid #ddd; border-radius: 3px; cursor: pointer; white-space: nowrap; }
 .fav-open-btn:hover { background: #e6f7ff; border-color: #1890ff; color: #1890ff; }
-
 .layer-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; max-height: 300px; }
 .layer-list li { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-bottom: 1px solid #f0f0f0; cursor: pointer; font-size: 11px; transition: background 0.2s; }
 .layer-list li:hover { background: #e6f7ff; }
-
 .item-main { display: flex; flex: 1; align-items: center; overflow: hidden; }
-
 .layer-title { flex: 1; font-weight: bold; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100px; }
-
 .group-tag-btn { padding: 1px 6px; font-size: 9px; background: #e6f7ff; border: 1px solid #91d5ff; color: #1890ff; border-radius: 10px; cursor: pointer; margin: 0 4px; white-space: nowrap; max-width: 60px; overflow: hidden; text-overflow: ellipsis; }
 .group-tag-btn:hover { background: #bae0ff; }
-
 .layer-type { width: 35px; color: #888; text-align: right; font-size: 9px; margin-right: 2px; }
-
 .star-btn { background: none; border: none; cursor: pointer; font-size: 14px; color: #ccc; padding: 0 0 0 4px; line-height: 1; }
 .star-btn.active { color: #fadb14; }
 .star-btn:hover { color: #ffc107; }
-
 .empty-list { padding: 20px; text-align: center; color: #999; font-size: 12px; }
 .performance-hint { padding: 5px; text-align: center; color: #faad14; font-size: 10px; background: #fffbe6; }
-
 .assign-modal-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.4); display: flex; justify-content: center; align-items: center; z-index: 3000; }
 .assign-modal { background: #fff; padding: 15px; border-radius: 6px; width: 250px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
 .assign-modal h4 { margin: 0 0 10px 0; font-size: 13px; color: #333; }
@@ -252,14 +256,12 @@ const goToFavorite = (item) => {
 .assign-group-list button.active { background: #e6f7ff; border-color: #1890ff; color: #1890ff; font-weight: bold; }
 .assign-actions { text-align: right; }
 .assign-actions button { padding: 4px 10px; font-size: 12px; background: #eee; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; }
-
 .group-edit-row { display: flex; gap: 5px; margin-bottom: 10px; }
 .group-edit-row input { flex: 1; padding: 4px 8px; font-size: 12px; border: 1px solid #ccc; border-radius: 3px; }
 .group-edit-row button { padding: 4px 12px; font-size: 12px; background: #1890ff; color: #fff; border: none; border-radius: 3px; cursor: pointer; }
 .group-edit-list { list-style: none; padding: 0; margin: 0; max-height: 200px; overflow-y: auto; }
 .group-edit-list li { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 12px; }
 .del-btn { background: none; border: none; color: #e74c3c; cursor: pointer; font-size: 11px; }
-
 .fav-modal-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; z-index: 2000; }
 .fav-modal-content { width: 300px; max-height: 500px; background: #fff; border-radius: 6px; display: flex; flex-direction: column; box-shadow: 0 4px 12px rgba(0,0,0,0.2); overflow: hidden; }
 .fav-modal-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 15px; background: #2c3e50; color: white; }

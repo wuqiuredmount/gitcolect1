@@ -2,6 +2,16 @@
   <div class="map-wrapper">
     <div ref="mapContainer" class="map-container-div" :class="{ 'white-canvas-bg': config.baseLayer.type === 'infinite-white' }"></div>
 
+    <!-- 🚨 新增：右键菜单 -->
+    <div 
+      v-if="contextMenuVisible" 
+      class="custom-context-menu"
+      :style="{ left: contextMenuX + 'px', top: contextMenuY + 'px' }"
+      @click.stop
+    >
+      <button class="context-menu-item delete-item" @click="handleDeleteLayer">删除</button>
+    </div>
+
     <!-- 放大缩小栏 -->
     <div v-if="finalVisibleTools.zoomControl" class="custom-zoom-control">
       <button @click="map?.zoomIn()" title="放大">+</button>
@@ -17,19 +27,17 @@
       </div>
     </div>
 
-    <!-- 自定义画布上传界面 -->
-    <div v-if="config.baseLayer.type === 'custom-canvas' && !isCustomImageLoaded" class="upload-container">
+    <!-- 🚨 核心修复：加载已有工程时，不显示上传界面 -->
+    <div v-if="config.baseLayer.type === 'custom-canvas' && !isCustomImageLoaded && !isLoadingProject" class="upload-container">
       <div class="upload-box">
         <h2>自定义底图 + 自由标记</h2>
         <p>请选择底图，或加载之前的标注</p>
         <div class="upload-actions">
           <button class="action-btn primary" @click="triggerUpload('base')">打开底图</button>
-          <button class="action-btn" @click="triggerUpload('layer')">打开标注层</button>
           <button class="action-btn" @click="triggerUpload('both')">打开底图+标注层</button>
         </div>
         <p class="upload-hint">支持任意图片格式，大文件也无需担心</p>
         <input type="file" accept="image/*" @change="handleBaseUpload" ref="baseInputRef" style="display: none;" />
-        <input type="file" accept=".json,.freemap" @change="handleLayerUpload" ref="layerInputRef" style="display: none;" />
         <input type="file" accept=".json,.freemap" @change="handleBothUpload" ref="bothInputRef" style="display: none;" />
       </div>
     </div>
@@ -84,7 +92,6 @@
       <!-- 自定义画布保存工具栏 -->
       <div v-if="config.baseLayer.type === 'custom-canvas'" class="save-toolbar">
         <button @click="saveData('base')">保存底图</button>
-        <button @click="saveData('layer')">保存标注层</button>
         <button @click="saveData('both')">保存底图+标注层</button>
       </div>
     </template>
@@ -124,7 +131,9 @@ const props = defineProps({
       initialView: { center: [39.0123, 117.3456], zoom: 15 },
       visibleTools: { zoomControl: true, drawToolbar: true, markerDocPanel: true, locatingPanel: true, opacityPanel: true, layerListPanel: true, infoPanel: true, resetCenter: true, zoomPercent: true }
     })
-  }
+  },
+  // 🚨 新增：标记当前是否正在加载已有工程，用于隐藏上传界面
+  isLoadingProject: { type: Boolean, default: false }
 });
 
 const finalVisibleTools = computed(() => {
@@ -133,9 +142,13 @@ const finalVisibleTools = computed(() => {
 
 const mapContainer = ref(null);
 const baseInputRef = ref(null);
-const layerInputRef = ref(null);
 const bothInputRef = ref(null);
 const infoPanelRef = ref(null);
+
+const contextMenuVisible = ref(false);
+const contextMenuX = ref(0);
+const contextMenuY = ref(0);
+const contextMenuLayerData = ref(null);
 
 let map = null;
 let editableLayers = null;
@@ -154,7 +167,6 @@ let currentBaseImageData = null;
 let currentBaseImageWidth = 0;
 let currentBaseImageHeight = 0;
 
-// 🚨 新增：初始视图记录 & 缩放百分比状态
 let defaultCenter = [39.0123, 117.3456];
 let defaultZoom = 15;
 const zoomLevelPercent = ref(100);
@@ -167,6 +179,17 @@ const drawnLayers = ref([]);
 const groups = ref(['默认']);
 const isCustomImageLoaded = ref(false);
 const AMAP_KEY = '69d86725ca981d56159af949ce2a68ec';
+
+// 🚨 核心新增：强制自动保存逻辑（对所有工具生效，尤其是无感持久化的鹰眼）
+const forceAutoSave = async () => {
+  if (!props.config.toolId) return;
+  try {
+    await saveAllLayers(props.config.toolId, drawnLayers.value);
+    console.log(`[自动保存] 工具 ${props.config.toolId} 的数据已静默持久化。`);
+  } catch (error) {
+    console.error('自动保存失败:', error);
+  }
+};
 
 const getMarkerIcon = (style) => {
   const color = style.color || '#1890ff';
@@ -212,15 +235,12 @@ const generateEllipsePoints = (center, latRadius, lngRadius, numPoints = 64) => 
   return points;
 };
 
-// 🚨 新增：缩放百分比控制逻辑
 const handleZoomPercentChange = () => {
   if (!map) return;
-  // 将百分比转化为 Leaflet 缩放级别，公式基于缩放级别与倍数的指数关系
   const zoom = Math.log2(zoomLevelPercent.value / 100);
   map.setZoom(zoom);
 };
 
-// 🚨 新增：回到底图中心点
 const resetToCenter = () => {
   if (!map) return;
   map.flyTo(defaultCenter, defaultZoom, { duration: 1.5 });
@@ -236,7 +256,6 @@ const handleMoveEnd = () => {
   }
 };
 
-// 🚨 新增：监听地图缩放，反向更新百分比滑块
 const handleZoomEnd = () => {
   if (!map) return;
   const zoom = map.getZoom();
@@ -250,7 +269,6 @@ const initMap = () => {
   const view = props.config.initialView || { center: [39.0123, 117.3456], zoom: 15 };
   const baseCfg = props.config.baseLayer;
 
-  // 🚨 核心修复：无限白色画布使用 CRS.Simple 并设置明确的初始视图
   const mapOptions = (baseCfg.type === 'custom-canvas')
     ? { crs: L.CRS.Simple, minZoom: -5, maxZoom: 10, zoomControl: false, attributionControl: false }
     : baseCfg.type === 'infinite-white'
@@ -260,7 +278,6 @@ const initMap = () => {
   map = L.map(mapContainer.value, mapOptions);
   L.DomEvent.on(mapContainer.value, 'contextmenu', L.DomEvent.preventDefault);
 
-  // 记录初始视图
   defaultCenter = [map.getCenter().lat, map.getCenter().lng];
   defaultZoom = map.getZoom();
 
@@ -269,13 +286,11 @@ const initMap = () => {
     try {
       const parsed = JSON.parse(savedState);
       map.setView(parsed.center, parsed.zoom);
-      // 更新默认视图为上次离开的位置，满足“回到底图中心点”的需求
       defaultCenter = [map.getCenter().lat, map.getCenter().lng];
       defaultZoom = map.getZoom();
     } catch (e) {}
   }
 
-  // 处理底图
   if (baseCfg.type === 'infinite-white') {
     // 纯白背景，无需加载贴图
   } else if (baseCfg.type === 'amap-satellite' || baseCfg.type === 'amap-standard') {
@@ -294,9 +309,7 @@ const initMap = () => {
   bindMapEvents();
   loadHistoricalLayers();
 
-  // 绑定缩放事件
   map.on('zoomend', handleZoomEnd);
-  // 初始化时同步一次百分比
   handleZoomEnd();
 
   resizeObserver = new ResizeObserver(() => { if (map) map.invalidateSize(); });
@@ -304,15 +317,16 @@ const initMap = () => {
   document.addEventListener('fullscreenchange', handleResize);
 };
 
-// 🚨 核心修复：放行 infinite-white 的初始化
 onMounted(() => {
-  if (props.config.baseLayer.type === 'custom-canvas') return; // 自定义画布需等待用户上传图片
+  if (props.config.baseLayer.type === 'custom-canvas') return;
   initMap();
 
   L.Marker.prototype.options.icon = getMarkerIcon(getDefaultStyle('marker'));
 });
 
 onUnmounted(() => {
+  // 🚨 核心修复：组件卸载前，最后保底保存一次数据，防止热更新或切换导致丢失
+  forceAutoSave();
   if (map) map.remove();
   if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
   document.removeEventListener('fullscreenchange', handleResize);
@@ -322,6 +336,31 @@ const handleResize = () => { setTimeout(() => { if (map) map.invalidateSize(); }
 const toggleFullscreen = () => {
   if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(err => console.warn(err));
   else document.exitFullscreen();
+};
+
+const hideContextMenu = () => {
+  contextMenuVisible.value = false;
+  contextMenuLayerData.value = null;
+};
+
+const handleDeleteLayer = () => {
+  if (!contextMenuLayerData.value || !editableLayers) return;
+  
+  const targetId = contextMenuLayerData.value.id;
+  const layerRef = contextMenuLayerData.value.layerRef;
+  
+  if (layerRef) {
+    editableLayers.removeLayer(layerRef);
+  }
+  
+  drawnLayers.value = drawnLayers.value.filter(item => item.id !== targetId);
+  
+  if (selectedNode.value && selectedNode.value.id === targetId) {
+    selectedNode.value = null;
+  }
+  
+  forceAutoSave(); // 🚨 删除后立刻自动保存
+  hideContextMenu();
 };
 
 const loadHistoricalLayers = async () => {
@@ -356,11 +395,22 @@ const loadHistoricalLayers = async () => {
           if (infoPanelRef.value) infoPanelRef.value.selectLayer(currentData);
         }
       });
+
+      layer.on('contextmenu', (e) => {
+        L.DomEvent.stopPropagation(e);
+        L.DomEvent.preventDefault(e);
+        contextMenuX.value = e.originalEvent.clientX;
+        contextMenuY.value = e.originalEvent.clientY;
+        contextMenuLayerData.value = layerData;
+        contextMenuVisible.value = true;
+      });
     }
   });
 };
 
 const bindMapEvents = () => {
+  map.on('click', hideContextMenu);
+
   map.on(L.Draw.Event.DRAWSTART, () => { map.on('contextmenu', finishDrawing); });
   map.on(L.Draw.Event.DRAWSTOP, () => {
     map.off('contextmenu', finishDrawing);
@@ -392,7 +442,7 @@ const bindMapEvents = () => {
         item.lng = layer.getLatLng ? layer.getLatLng().lng : (layer.getBounds ? layer.getBounds().getCenter().lng : 0);
       }
     });
-    saveAllLayers(props.config.toolId, drawnLayers.value);
+    forceAutoSave(); // 🚨 编辑后自动保存
   });
 
   map.on('moveend', handleMoveEnd);
@@ -429,7 +479,17 @@ const addLayerToMap = (layer, type, latlng) => {
       if (infoPanelRef.value) infoPanelRef.value.selectLayer(currentData);
     }
   });
-  saveAllLayers(props.config.toolId, drawnLayers.value);
+
+  layer.on('contextmenu', (e) => {
+    L.DomEvent.stopPropagation(e);
+    L.DomEvent.preventDefault(e);
+    contextMenuX.value = e.originalEvent.clientX;
+    contextMenuY.value = e.originalEvent.clientY;
+    contextMenuLayerData.value = layerData;
+    contextMenuVisible.value = true;
+  });
+
+  forceAutoSave(); // 🚨 新增图层后自动保存
 };
 
 const handleLayerUpdate = (updatedLayer) => {
@@ -446,7 +506,7 @@ const handleLayerUpdate = (updatedLayer) => {
         selectedNode.value.title = updatedLayer.objectName;
       }
     }
-    saveAllLayers(props.config.toolId, drawnLayers.value);
+    forceAutoSave(); // 🚨 数据更新后自动保存
   }
 };
 
@@ -457,7 +517,7 @@ const handleUpdateLayerGroup = ({ id, group }) => {
     if (group && !groups.value.includes(group)) {
       groups.value.push(group);
     }
-    saveAllLayers(props.config.toolId, drawnLayers.value);
+    forceAutoSave();
   }
 };
 
@@ -477,7 +537,7 @@ const handleRemoveGroup = (groupName) => {
     }
   });
   if (hasChange) {
-    saveAllLayers(props.config.toolId, drawnLayers.value);
+    forceAutoSave();
   }
 };
 
@@ -523,8 +583,17 @@ const flyToLayer = (item) => {
   }
 };
 
+// 🚨 核心加固：清空所有图层的铁律，严禁静默清空鹰眼数据
 const clearAllLayers = (silent = false) => {
-  if (!silent && !window.confirm('确认清除所有图形元素并删除相应信息吗？')) return;
+  // 【关键拦截】鹰眼工具的数据禁止静默清除（防止代码加载工程时误触）
+  if (props.config.toolId === 'geo-eagle-eye' && silent) {
+    console.warn('已阻止对鹰眼公共平台数据的静默覆盖/清理！');
+    return;
+  }
+
+  // 手动清理必须给予极度明确的警告
+  if (!silent && !window.confirm('确认清除所有图形元素并删除相应信息吗？此操作不可逆！\n(鹰眼平台的数据一旦删除，所有用户将无法看到)')) return;
+
   if (editableLayers) {
     editableLayers.clearLayers();
   }
@@ -536,8 +605,9 @@ const clearAllLayers = (silent = false) => {
   rectStartLatLng = null; circleStartLatLng = null; ellipseStartLatLng = null;
   drawnLayers.value = [];
   groups.value = ['默认'];
+  
   if (!silent) {
-    saveAllLayers(props.config.toolId, []);
+    forceAutoSave(); // 🚨 手动清理后保存空数据
   }
 };
 
@@ -730,7 +800,6 @@ const handleSearch = async (query, callback) => {
 
 const triggerUpload = (type) => {
   if (type === 'base') baseInputRef.value.click();
-  else if (type === 'layer') layerInputRef.value.click();
   else if (type === 'both') bothInputRef.value.click();
 };
 
@@ -738,22 +807,6 @@ const handleBaseUpload = async (event) => {
   const file = event.target.files[0]; if (!file) return;
   const url = URL.createObjectURL(file);
   loadBaseImage(url, file);
-  event.target.value = '';
-};
-
-const handleLayerUpload = (event) => {
-  const file = event.target.files[0]; if (!file) return;
-  const reader = new FileReader();
-  reader.onload = async (e) => {
-    try {
-      const data = parseProject(e.target.result);
-      if (data.baseImage) {
-        loadBaseImage(data.baseImage, null, data.width, data.height);
-        setTimeout(() => restoreAnnotations(data.annotations), 500);
-      } else { alert("该文件仅包含标注层，请先打开一张底图，再加载标注层！"); }
-    } catch (err) { alert(err.message); }
-  };
-  reader.readAsText(file);
   event.target.value = '';
 };
 
@@ -791,7 +844,6 @@ const loadBaseImage = async (imageSrc, fileObj = null, width = 0, height = 0) =>
         baseLayer = L.imageOverlay(imageSrc, bounds, { opacity: 1 }).addTo(map);
         map.fitBounds(bounds);
 
-        // 记录初始视图
         defaultCenter = [map.getCenter().lat, map.getCenter().lng];
         defaultZoom = map.getZoom();
 
@@ -838,10 +890,7 @@ const saveData = async (type) => {
     return;
   }
   const serializedAnnotations = serializeAnnotations(drawnLayers.value);
-  if (type === 'layer') {
-    const jsonStr = JSON.stringify({ annotations: serializedAnnotations }, null, 2);
-    downloadFile(jsonStr, `标注层_${timestamp}.json`);
-  } else if (type === 'both') {
+  if (type === 'both') {
     const projectStr = packageProject(currentBaseImageData, currentBaseImageWidth, currentBaseImageHeight, serializedAnnotations);
     downloadFile(projectStr, `底图+标注层_${timestamp}.freemap`);
   }
@@ -902,8 +951,27 @@ const restoreAnnotations = (annotations) => {
           if (infoPanelRef.value) infoPanelRef.value.selectLayer(currentData);
         }
       });
+
+      layer.on('contextmenu', (e) => {
+        L.DomEvent.stopPropagation(e);
+        L.DomEvent.preventDefault(e);
+        contextMenuX.value = e.originalEvent.clientX;
+        contextMenuY.value = e.originalEvent.clientY;
+        contextMenuLayerData.value = layerData;
+        contextMenuVisible.value = true;
+      });
     }
   });
+};
+
+// 🚨 核心新增：供 App.vue 触发强制从 IndexedDB 重新加载数据
+const refreshDataFromDB = async () => {
+  if (!map || !editableLayers) return;
+  // 清空当前地图上的图层
+  editableLayers.clearLayers();
+  drawnLayers.value = [];
+  // 重新加载
+  await loadHistoricalLayers();
 };
 
 const getProjectData = () => {
@@ -939,6 +1007,18 @@ const getProjectData = () => {
 };
 
 const loadProjectData = async (projectData) => {
+  // 🚨 核心修复：鹰眼公共平台是独立工具，绝对不允许被工程文件覆盖
+  if (props.config.toolId === 'geo-eagle-eye') {
+    alert('“鹰眼公共平台”是独立工具，它的数据是自动永久保存的，不支持加载工程文件覆盖数据，以免造成数据丢失。');
+    return;
+  }
+
+  // 🚨 核心修复：防止加载新工程时覆盖当前未保存的数据
+  if (drawnLayers.value.length > 0) {
+    const confirmLoad = window.confirm('当前工作区有未保存的图形，加载新工程将覆盖它们。确定要继续吗？');
+    if (!confirmLoad) return;
+  }
+
   clearAllLayers(true); 
   if (map) { map.remove(); map = null; }
 
@@ -952,9 +1032,8 @@ const loadProjectData = async (projectData) => {
 
   const view = props.config.initialView || { center: [39.0123, 117.3456], zoom: 15 };
   
-  // 🚨 核心修复：loadProjectData 同样需要显式设置 infinite-white 的初始视图
   const mapOptions = (baseCfg.type === 'custom-canvas')
-    ? { crs: L.CRS.Simple, minZoom: -5, maxZoom: 10, zoomControl: false, attributionControl: false }
+    ? { crs: L.CRS.Simple, minZoom: -5, maxZoom: 10, zoomControl: false, attributionControl: false, center: [0, 0], zoom: 1 }
     : baseCfg.type === 'infinite-white'
     ? { crs: L.CRS.Simple, minZoom: -5, maxZoom: 10, zoomControl: false, attributionControl: false, center: [0, 0], zoom: 1 }
     : { center: view.center, zoom: view.zoom, zoomControl: false, attributionControl: false };
@@ -962,7 +1041,6 @@ const loadProjectData = async (projectData) => {
   map = L.map(mapContainer.value, mapOptions);
   L.DomEvent.on(mapContainer.value, 'contextmenu', L.DomEvent.preventDefault);
 
-  // 记录初始视图
   defaultCenter = [map.getCenter().lat, map.getCenter().lng];
   defaultZoom = map.getZoom();
 
@@ -1018,7 +1096,7 @@ const loadProjectData = async (projectData) => {
     restoreAnnotations(layers);
   }
 
-  saveAllLayers(props.config.toolId, drawnLayers.value);
+  forceAutoSave(); // 🚨 加载工程后，触发一次自动保存，确保数据落地
 };
 
 const saveProjectToInventoryAction = async (projectName) => {
@@ -1030,6 +1108,7 @@ const saveProjectToInventoryAction = async (projectName) => {
 defineExpose({
   getProjectData,
   loadProjectData,
+  refreshDataFromDB, // 🚨 新增暴露
   saveProjectToInventory: saveProjectToInventoryAction
 });
 </script>
@@ -1039,7 +1118,6 @@ defineExpose({
 .map-wrapper { position: relative; width: 100%; height: 100%; padding: 0; margin: 0; overflow: hidden; flex: 1; background: #1a1a1a; }
 .map-container-div { width: 100%; height: 100%; background: #1a1a1a; }
 
-/* 🚨 无限白色画布专用背景色 */
 .white-canvas-bg {
   background: #ffffff !important;
 }
@@ -1049,7 +1127,6 @@ defineExpose({
 .custom-zoom-control button:last-child { border-bottom: none; }
 .custom-zoom-control button:hover { background: #f4f4f4; }
 
-/* 🚨 回中心点与缩放倍数控制区样式 */
 .custom-bottom-toolbar {
   position: absolute;
   bottom: 15px;
@@ -1113,4 +1190,30 @@ defineExpose({
 .save-toolbar { position: absolute; bottom: 15px; left: 150px; z-index: 1050; display: flex; gap: 8px; background: rgba(255, 255, 255, 0.9); padding: 5px 10px; border-radius: 5px; box-shadow: 0 2px 6px rgba(0,0,0,0.2); }
 .save-toolbar button { background: #f0f0f0; border: 1px solid #ccc; padding: 4px 10px; border-radius: 3px; cursor: pointer; font-size: 12px; transition: 0.2s; }
 .save-toolbar button:hover { background: #e0e0e0; }
+
+.custom-context-menu {
+  position: fixed;
+  z-index: 9999;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  padding: 4px 0;
+  min-width: 80px;
+}
+.context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 16px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  font-size: 13px;
+  color: #1f2937;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.context-menu-item:hover { background: #f3f4f6; }
+.context-menu-item.delete-item { color: #ef4444; }
+.context-menu-item.delete-item:hover { background: #fee2e2; }
 </style>

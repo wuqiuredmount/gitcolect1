@@ -1,10 +1,14 @@
 <template>
-  <BaseMapTool ref="baseMapToolRef" :config="config" />
+  <BaseMapTool ref="baseMapToolRef" :config="config" :is-loading-project="isLoadingProject" />
 </template>
 
 <script setup>
 import { ref } from 'vue';
 import BaseMapTool from './BaseMapTool.vue';
+
+const props = defineProps({
+  isLoadingProject: { type: Boolean, default: false }
+});
 
 const baseMapToolRef = ref(null);
 
@@ -12,7 +16,9 @@ const config = {
   toolId: 'geo-custom-canvas',
   baseLayer: { type: 'custom-canvas' },
   initialView: { center: [0, 0], zoom: 1 },
-  visibleTools: { zoomControl: true, drawToolbar: true, markerDocPanel: true, locatingPanel: true, opacityPanel: true, layerListPanel: true, infoPanel: true }
+  visibleTools: { zoomControl: true, drawToolbar: true,
+  markerDocPanel: true, locatingPanel: true, opacityPanel: true,
+  layerListPanel: true, infoPanel: true }
 };
 
 defineExpose({
