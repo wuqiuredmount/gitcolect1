@@ -1,5 +1,5 @@
 <template>
-  <BaseMapTool ref="baseMapToolRef" :config="config" :is-loading-project="isLoadingProject" />
+  <BaseMapTool ref="baseMapToolRef" :config="config" :is-loading-project="isLoadingProject" :file-id="fileId" />
 </template>
 
 <script setup>
@@ -7,7 +7,8 @@ import { ref } from 'vue';
 import BaseMapTool from './BaseMapTool.vue';
 
 const props = defineProps({
-  isLoadingProject: { type: Boolean, default: false }
+  isLoadingProject: { type: Boolean, default: false },
+  fileId: { type: String, default: 'legacy-file' } // 🚨 接收文件编号
 });
 
 const baseMapToolRef = ref(null);

@@ -1,11 +1,15 @@
 <template>
-  <!-- 🚨 绑定 ref 以暴露底层能力 -->
-  <BaseMapTool ref="baseMapToolRef" :config="config" />
+  <!-- 🚨 绑定 ref 以暴露底层能力，并传递 fileId -->
+  <BaseMapTool ref="baseMapToolRef" :config="config" :file-id="fileId" />
 </template>
 
 <script setup>
 import { ref } from 'vue';
 import BaseMapTool from './BaseMapTool.vue';
+
+const props = defineProps({
+  fileId: { type: String, default: 'legacy-file' } // 🚨 接收文件编号
+});
 
 const baseMapToolRef = ref(null);
 

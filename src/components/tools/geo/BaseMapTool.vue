@@ -1,8 +1,8 @@
 <template>
   <div class="map-wrapper">
-    <div ref="mapContainer" class="map-container-div" :class="{ 'white-canvas-bg': config.baseLayer.type === 'infinite-white' }"></div>
+    <div ref="mapContainer" class="map-container-div"></div>
 
-    <!-- 🚨 新增：右键菜单 -->
+    <!-- 右键菜单 -->
     <div 
       v-if="contextMenuVisible" 
       class="custom-context-menu"
@@ -27,14 +27,14 @@
       </div>
     </div>
 
-    <!-- 🚨 核心修复：加载已有工程时，不显示上传界面 -->
+    <!-- 加载已有工程时，不显示上传界面 -->
     <div v-if="config.baseLayer.type === 'custom-canvas' && !isCustomImageLoaded && !isLoadingProject" class="upload-container">
       <div class="upload-box">
         <h2>自定义底图 + 自由标记</h2>
         <p>请选择底图，或加载之前的标注</p>
         <div class="upload-actions">
           <button class="action-btn primary" @click="triggerUpload('base')">打开底图</button>
-          <button class="action-btn" @click="triggerUpload('both')">打开底图+标注层</button>
+          <!-- 🚨 已经删除了“打开底图+标注层”按钮，只保留纯净的底图选择 -->
         </div>
         <p class="upload-hint">支持任意图片格式，大文件也无需担心</p>
         <input type="file" accept="image/*" @change="handleBaseUpload" ref="baseInputRef" style="display: none;" />
@@ -63,10 +63,10 @@
       <!-- 图形列表 Teleport -->
       <Teleport to="#tool-header-slot">
         <LayerListPanel 
-          v-if="finalVisibleTools.layerListPanel" 
+          v-if="isActive && finalVisibleTools.layerListPanel" 
           :panel-id="'layerList-' + config.toolId" 
           :layers="drawnLayers" 
-          :groups="groups"
+          :groups="groups.map(g => g.name)" 
           @locate="flyToLayer"
           @add-group="handleAddGroup"
           @remove-group="handleRemoveGroup"
@@ -79,39 +79,39 @@
       <OpacityPanel v-if="finalVisibleTools.opacityPanel" :panel-id="'opacity-' + config.toolId" :baseOpacity="baseOpacity" :annoOpacity="annoOpacity" :showAnno="config.baseLayer.annoUrl ? true : false" @update:base="updateBaseOpacity" @update:anno="updateAnnoOpacity" />
       <InfoPanel v-if="finalVisibleTools.infoPanel" ref="infoPanelRef" :tool-id="config.toolId" :layers="drawnLayers" @locate="flyToLayer" @update-layer="handleLayerUpdate" />
       
-      <MarkerDocPanel 
+            <MarkerDocPanel 
         v-if="finalVisibleTools.markerDocPanel && selectedNode" 
         :node="selectedNode" 
         :tool-id="config.toolId" 
+        :file-id="fileId" 
         @close="selectedNode = null" 
         @update:title="handleTitleUpdate" 
         @update:content="handleDocContentUpdate" 
         @update:style="val => updateNodeStyle(val)" 
       />
-
-      <!-- 自定义画布保存工具栏 -->
-      <div v-if="config.baseLayer.type === 'custom-canvas'" class="save-toolbar">
-        <button @click="saveData('base')">保存底图</button>
-        <button @click="saveData('both')">保存底图+标注层</button>
-      </div>
     </template>
   </div>
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref, computed } from 'vue';
+import { onMounted, onUnmounted, onActivated, onDeactivated, ref, computed } from 'vue';
+
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-draw/dist/leaflet.draw.css';
 import 'leaflet-draw';
 
-import { zhCN_DrawLocal, drawStyles } from '../../../groups/geo/utils/drawConfig.js';
+import { zhCN_DrawLocal } from '../../../groups/geo/utils/drawConfig.js';
 import { saveAllLayers, getAllLayers } from '../../../groups/geo/utils/annotationStore.js';
-import { downloadFile, fileToBase64, serializeAnnotations, packageProject, parseProject } from '../../../groups/geo/utils/fileManager.js';
+import { fileToBase64, parseProject } from '../../../groups/geo/utils/fileManager.js';
+
 import { getMergedToolConfig, getDefaultStyle } from '../../../groups/geo/utils/toolSettings.js';
 import { MARKER_ICONS } from '../../../groups/geo/utils/markerIcons.js';
 import { buildProjectFile } from '../../../groups/geo/utils/projectManager.js';
 import { saveProjectToInventory } from '../../../groups/geo/utils/projectStore.js';
+
+import { getNextSequence } from '../../../groups/geo/utils/systemStore.js';// 🚨 Phase 2b：新增编号工具
+import { formatGraphicId, formatGroupId } from '../../../groups/geo/utils/toolRegistry.js';
 
 import LocatingPanel from './panels/LocatingPanel.vue';
 import LayerListPanel from './panels/LayerListPanel.vue';
@@ -132,8 +132,8 @@ const props = defineProps({
       visibleTools: { zoomControl: true, drawToolbar: true, markerDocPanel: true, locatingPanel: true, opacityPanel: true, layerListPanel: true, infoPanel: true, resetCenter: true, zoomPercent: true }
     })
   },
-  // 🚨 新增：标记当前是否正在加载已有工程，用于隐藏上传界面
-  isLoadingProject: { type: Boolean, default: false }
+  isLoadingProject: { type: Boolean, default: false },
+  fileId: { type: String, default: 'legacy-file' } // 🚨 新增：接收当前文件编号
 });
 
 const finalVisibleTools = computed(() => {
@@ -176,17 +176,77 @@ const baseOpacity = ref(1);
 const annoOpacity = ref(1);
 const activeTool = ref(null);
 const drawnLayers = ref([]);
-const groups = ref(['默认']);
+const groups = ref([{ id: 1, name: '默认' }]);
 const isCustomImageLoaded = ref(false);
+// 🚨 跟踪 KeepAlive 激活状态，控制 Teleport 内容是否挂载
+const isActive = ref(true);
 const AMAP_KEY = '69d86725ca981d56159af949ce2a68ec';
 
-// 🚨 核心新增：强制自动保存逻辑（对所有工具生效，尤其是无感持久化的鹰眼）
+// 🚨 坐标提取工具函数（供多处复用）
+const extractCoordsFromLayer = (item) => {
+  let coords = [];
+  const layer = item.layerRef;
+  if (!layer) return coords;
+  try {
+    if (item.type === 'marker') {
+      const latlng = layer.getLatLng();
+      if (Number.isFinite(latlng.lat) && Number.isFinite(latlng.lng)) {
+        coords = [[latlng.lat, latlng.lng]];
+      }
+    } else if (item.type === 'rectangle') {
+      const bounds = layer.getBounds();
+      const sw = bounds.getSouthWest();
+      const ne = bounds.getNorthEast();
+      if ([sw.lat, sw.lng, ne.lat, ne.lng].every(Number.isFinite)) {
+        coords = [[sw.lat, sw.lng], [ne.lat, ne.lng]];
+      }
+    } else {
+      const latlngs = layer.getLatLngs();
+      const flatten = (arr) => Array.isArray(arr[0]) ? arr.map(flatten).flat(1) : arr.map(pt => [pt.lat, pt.lng]);
+      const flat = flatten(latlngs);
+      if (flat.length > 0 && flat.every(pt => Number.isFinite(pt[0]) && Number.isFinite(pt[1]))) {
+        coords = flat;
+      }
+    }
+  } catch (e) {
+    console.warn('[extractCoordsFromLayer] 提取坐标失败', e);
+  }
+  return coords;
+};
+
+// 🚨 保存前提取坐标 + NaN 校验 + coords 回退
 const forceAutoSave = async () => {
   if (!props.config.toolId) return;
   try {
-    await saveAllLayers(props.config.toolId, drawnLayers.value);
-    console.log(`[自动保存] 工具 ${props.config.toolId} 的数据已静默持久化。`);
-  } catch (error) {
+    const layersToSave = drawnLayers.value.map(item => {
+      let coords = extractCoordsFromLayer(item);
+
+      // 提取失败时回退到已存的 coords，避免覆盖有效数据
+      if (coords.length === 0) {
+        if (item.coords && Array.isArray(item.coords) && item.coords.length > 0) {
+          coords = item.coords;
+        } else {
+          console.warn('[forceAutoSave] 跳过完全无坐标的图层：', item.id, item.type);
+          return null;
+        }
+      }
+
+      // 同步刷新 lat/lng 字段
+      let safeLat = item.lat, safeLng = item.lng;
+      if (item.type === 'marker' && coords[0]) {
+        safeLat = coords[0][0];
+        safeLng = coords[0][1];
+      }
+
+      const { layerRef, ...rest } = item;
+      return { ...rest, lat: safeLat, lng: safeLng, coords };
+    }).filter(Boolean);
+
+      // 🚨 核心修复：如果 props.fileId 为空，使用安全值兜底
+      // 🚨 核心修复：如果 props.fileId 为空，使用安全值兜底；鹰眼平台强制统一存放
+      const safeFileId = props.config.toolId === 'geo-eagle-eye' ? 'legacy-file' : (props.fileId || 'legacy-file');
+      await saveAllLayers(props.config.toolId, safeFileId, layersToSave);       
+      console.log(`[自动保存] 工具 ${props.config.toolId} 文件 ${safeFileId} 的数据已静默持久化。`);  } catch (error) {
     console.error('自动保存失败:', error);
   }
 };
@@ -271,8 +331,6 @@ const initMap = () => {
 
   const mapOptions = (baseCfg.type === 'custom-canvas')
     ? { crs: L.CRS.Simple, minZoom: -5, maxZoom: 10, zoomControl: false, attributionControl: false }
-    : baseCfg.type === 'infinite-white'
-    ? { crs: L.CRS.Simple, minZoom: -5, maxZoom: 10, zoomControl: false, attributionControl: false, center: [0, 0], zoom: 1 }
     : { center: view.center, zoom: view.zoom, zoomControl: false, attributionControl: false };
 
   map = L.map(mapContainer.value, mapOptions);
@@ -291,9 +349,7 @@ const initMap = () => {
     } catch (e) {}
   }
 
-  if (baseCfg.type === 'infinite-white') {
-    // 纯白背景，无需加载贴图
-  } else if (baseCfg.type === 'amap-satellite' || baseCfg.type === 'amap-standard') {
+  if (baseCfg.type === 'amap-satellite' || baseCfg.type === 'amap-standard') {
     baseLayer = L.tileLayer(baseCfg.url, { subdomains: ['1', '2', '3', '4'], maxZoom: 18, maxNativeZoom: 18 }).addTo(map);
     if (baseCfg.annoUrl) annoLayer = L.tileLayer(baseCfg.annoUrl, { subdomains: ['1', '2', '3', '4'], maxZoom: 18, maxNativeZoom: 18 }).addTo(map);
   } else if (baseCfg.type === 'esri-world') {
@@ -317,15 +373,39 @@ const initMap = () => {
   document.addEventListener('fullscreenchange', handleResize);
 };
 
-onMounted(() => {
+onMounted(async () => {
+  if (!groups.value.find(g => g.name === '默认')) {
+    groups.value.push({ id: 1, name: '默认' });
+  }
+
   if (props.config.baseLayer.type === 'custom-canvas') return;
   initMap();
 
   L.Marker.prototype.options.icon = getMarkerIcon(getDefaultStyle('marker'));
 });
 
+// KeepAlive 被停用时：标记非活跃 + 强制保存
+onDeactivated(() => {
+  isActive.value = false;
+  console.log(`[停用] 工具 ${props.config.toolId}，强制保存...`);
+  forceAutoSave();
+});
+
+// KeepAlive 被重新激活时：标记活跃 + 刷新数据
+let mountCount = 0;
+onActivated(async () => {
+  isActive.value = true;
+  mountCount++;
+  if (mountCount <= 1) return;
+
+  console.log(`[激活] 工具 ${props.config.toolId}`);
+  if (map) {
+    setTimeout(() => map.invalidateSize(), 50);
+    await refreshDataFromDB();
+  }
+});
+
 onUnmounted(() => {
-  // 🚨 核心修复：组件卸载前，最后保底保存一次数据，防止热更新或切换导致丢失
   forceAutoSave();
   if (map) map.remove();
   if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
@@ -359,16 +439,31 @@ const handleDeleteLayer = () => {
     selectedNode.value = null;
   }
   
-  forceAutoSave(); // 🚨 删除后立刻自动保存
+  forceAutoSave(); 
   hideContextMenu();
 };
 
+// 加载时过滤无效坐标
 const loadHistoricalLayers = async () => {
   if (!map || !editableLayers) return;
-  const records = await getAllLayers(props.config.toolId);
+  // 🚨 只读取当前文件的图形
+  // 🚨 核心修复：鹰眼平台作为公共平台，不进行文件隔离，加载所有历史数据
+  const queryFileId = props.config.toolId === 'geo-eagle-eye' ? null : props.fileId;
+  const records = await getAllLayers(props.config.toolId, queryFileId); 
   if (!records || records.length === 0) return;
+  
+  const isValidPoint = (pt) => Array.isArray(pt) && pt.length >= 2 && Number.isFinite(pt[0]) && Number.isFinite(pt[1]);
 
   records.forEach(item => {
+    if (!item.coords || !Array.isArray(item.coords) || item.coords.length === 0) {
+      console.warn('跳过无效图层(缺少坐标):', item.id);
+      return;
+    }
+    if (!item.coords.every(isValidPoint)) {
+      console.warn('跳过无效图层(坐标含NaN):', item.id, JSON.stringify(item.coords).slice(0, 200));
+      return;
+    }
+
     let layer = null;
     try {
       if (item.type === 'polygon' || item.type === 'circle' || item.type === 'ellipse') layer = L.polygon(item.coords, item.style).addTo(map);
@@ -383,11 +478,20 @@ const loadHistoricalLayers = async () => {
     if (layer) {
       editableLayers.addLayer(layer);
       layer.uniqueId = item.id;
-      const layerData = { ...item, layerRef: layer };
-      drawnLayers.value.push(layerData);
-      if (item.group && !groups.value.includes(item.group)) {
-        groups.value.push(item.group);
+
+      let safeLat = item.lat, safeLng = item.lng;
+      if (item.coords[0]) {
+        safeLat = item.coords[0][0];
+        safeLng = item.coords[0][1];
       }
+
+      const layerData = { ...item, lat: safeLat, lng: safeLng, layerRef: layer };
+      drawnLayers.value.push(layerData);
+
+      if (item.group && !groups.value.find(g => g.name === item.group)) {
+        groups.value.push({ id: 0, name: item.group });
+      }
+
       layer.on('click', () => {
         const currentData = drawnLayers.value.find(d => d.id === layer.uniqueId);
         if (currentData) {
@@ -438,27 +542,53 @@ const bindMapEvents = () => {
     e.layers.eachLayer((layer) => {
       const item = drawnLayers.value.find(d => d.id === layer.uniqueId);
       if (item) {
-        item.lat = layer.getLatLng ? layer.getLatLng().lat : (layer.getBounds ? layer.getBounds().getCenter().lat : 0);
-        item.lng = layer.getLatLng ? layer.getLatLng().lng : (layer.getBounds ? layer.getBounds().getCenter().lng : 0);
+        try {
+          const ll = layer.getLatLng ? layer.getLatLng() : (layer.getBounds ? layer.getBounds().getCenter() : null);
+          if (ll && Number.isFinite(ll.lat) && Number.isFinite(ll.lng)) {
+            item.lat = ll.lat;
+            item.lng = ll.lng;
+          }
+        } catch (err) { /* ignore */ }
       }
     });
-    forceAutoSave(); // 🚨 编辑后自动保存
+    forceAutoSave();
   });
 
   map.on('moveend', handleMoveEnd);
 };
 
-const addLayerToMap = (layer, type, latlng) => {
-  const uuid = Date.now().toString(36) + Math.random().toString(36).substring(2, 9);
-  layer.uniqueId = uuid;
+// 🚨 Phase 2b：创建时使用带前缀的新编号 CM.00001
+const addLayerToMap = async (layer, type, latlng) => {
+  // 从当前工具库获取下一个序号
+  const seq = await getNextSequence(props.config.toolId, 'graphic');
+  const graphicId = formatGraphicId(props.config.toolId, seq);
+  layer.uniqueId = graphicId;
 
   const initialTitle = ''; 
   const defaultStyle = { ...getDefaultStyle(type) };
 
+  let safeLat = 0, safeLng = 0;
+  try {
+    if (type === 'marker') {
+      const ll = layer.getLatLng();
+      if (Number.isFinite(ll.lat) && Number.isFinite(ll.lng)) {
+        safeLat = ll.lat; safeLng = ll.lng;
+      }
+    } else if (latlng) {
+      const a = Number(latlng.lat), b = Number(latlng.lng);
+      if (Number.isFinite(a) && Number.isFinite(b)) { safeLat = a; safeLng = b; }
+    }
+  } catch (e) { console.warn('[addLayerToMap] 提取坐标失败', e); }
+
   const layerData = {
-    id: uuid, toolId: props.config.toolId, title: initialTitle, type,
-    lat: latlng ? latlng.lat : 0, lng: latlng ? latlng.lng : 0,
-    layerRef: layer, docHtml: '', 
+    id: graphicId,
+    toolId: props.config.toolId, 
+    title: initialTitle, 
+    type,
+    lat: safeLat, 
+    lng: safeLng,
+    layerRef: layer, 
+    docHtml: '', 
     objectName: '', 
     group: '默认',
     fields: Array.from({ length: 500 }).map(() => ({ label: '', value: '' })),
@@ -489,7 +619,7 @@ const addLayerToMap = (layer, type, latlng) => {
     contextMenuVisible.value = true;
   });
 
-  forceAutoSave(); // 🚨 新增图层后自动保存
+  forceAutoSave();
 };
 
 const handleLayerUpdate = (updatedLayer) => {
@@ -506,7 +636,7 @@ const handleLayerUpdate = (updatedLayer) => {
         selectedNode.value.title = updatedLayer.objectName;
       }
     }
-    forceAutoSave(); // 🚨 数据更新后自动保存
+    forceAutoSave();
   }
 };
 
@@ -514,21 +644,21 @@ const handleUpdateLayerGroup = ({ id, group }) => {
   const index = drawnLayers.value.findIndex(l => l.id === id);
   if (index !== -1) {
     drawnLayers.value[index].group = group;
-    if (group && !groups.value.includes(group)) {
-      groups.value.push(group);
-    }
     forceAutoSave();
   }
 };
 
-const handleAddGroup = (groupName) => {
-  if (groupName && !groups.value.includes(groupName)) {
-    groups.value.push(groupName);
+// 🚨 Phase 2b：新分组编号格式 CM-G.00001
+const handleAddGroup = async (groupName) => {
+  if (groupName && !groups.value.find(g => g.name === groupName)) {
+    const seq = await getNextSequence(props.config.toolId, 'group');
+    const groupId = formatGroupId(props.config.toolId, seq);
+    groups.value.push({ id: groupId, name: groupName });
   }
 };
 
 const handleRemoveGroup = (groupName) => {
-  groups.value = groups.value.filter(g => g !== groupName);
+  groups.value = groups.value.filter(g => g.name !== groupName);
   let hasChange = false;
   drawnLayers.value.forEach(layer => {
     if (layer.group === groupName) {
@@ -575,23 +705,33 @@ const handleDocContentUpdate = (payload) => {
   handleLayerUpdate({ id: id, docHtml: docHtml });
 };
 
+// 点击列表时校验坐标
 const flyToLayer = (item) => {
-  if (item.lat && item.lng && map) {
-    const zoom = props.config.baseLayer.type === 'custom-canvas' || props.config.baseLayer.type === 'infinite-white' ? 2 : 16;
-    map.flyTo([item.lat, item.lng], zoom, { duration: 1.5 });
-    if (item.layerRef) item.layerRef.fire('click');
+  if (!item || !map) return;
+  const lat = Number(item.lat);
+  const lng = Number(item.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    console.warn('[flyToLayer] 无效坐标，跳过：', item.id, lat, lng);
+    return;
+  }
+  const zoom = props.config.baseLayer.type === 'custom-canvas' ? 2 : 16;
+  try {
+    map.flyTo([lat, lng], zoom, { duration: 1.5 });
+  } catch (e) {
+    console.warn('[flyToLayer] flyTo 失败：', e);
+    return;
+  }
+  if (item.layerRef && typeof item.layerRef.fire === 'function') {
+    try { item.layerRef.fire('click'); } catch (e) { /* ignore */ }
   }
 };
 
-// 🚨 核心加固：清空所有图层的铁律，严禁静默清空鹰眼数据
 const clearAllLayers = (silent = false) => {
-  // 【关键拦截】鹰眼工具的数据禁止静默清除（防止代码加载工程时误触）
   if (props.config.toolId === 'geo-eagle-eye' && silent) {
     console.warn('已阻止对鹰眼公共平台数据的静默覆盖/清理！');
     return;
   }
 
-  // 手动清理必须给予极度明确的警告
   if (!silent && !window.confirm('确认清除所有图形元素并删除相应信息吗？此操作不可逆！\n(鹰眼平台的数据一旦删除，所有用户将无法看到)')) return;
 
   if (editableLayers) {
@@ -604,10 +744,10 @@ const clearAllLayers = (silent = false) => {
   activeTool.value = null;
   rectStartLatLng = null; circleStartLatLng = null; ellipseStartLatLng = null;
   drawnLayers.value = [];
-  groups.value = ['默认'];
+  groups.value = [{ id: 1, name: '默认' }];
   
   if (!silent) {
-    forceAutoSave(); // 🚨 手动清理后保存空数据
+    forceAutoSave();
   }
 };
 
@@ -787,7 +927,7 @@ const handleSearch = async (query, callback) => {
     const data = await res.json();
     if (data.status === '1' && data.geocodes && data.geocodes.length > 0) {
       const location = data.geocodes[0].location.split(',');
-      const zoom = props.config.baseLayer.type === 'custom-canvas' || props.config.baseLayer.type === 'infinite-white' ? 2 : 16;
+      const zoom = props.config.baseLayer.type === 'custom-canvas' ? 2 : 16;
       map.flyTo([parseFloat(location[1]), parseFloat(location[0])], zoom, { duration: 2 });
       callback(`已定位: ${data.geocodes[0].formatted_address}`);
     } else {
@@ -877,30 +1017,21 @@ const resetImage = () => {
   if (map) { map.remove(); map = null; }
   isCustomImageLoaded.value = false;
   drawnLayers.value = [];
-  groups.value = ['默认'];
+  groups.value = [{ id: 1, name: '默认' }];
   selectedNode.value = null;
   currentBaseImageData = null;
 };
 
-const saveData = async (type) => {
-  const timestamp = new Date().getTime();
-  if (type === 'base') {
-    if (!currentBaseImageData) return alert("底图数据不存在！");
-    downloadFile(currentBaseImageData, `底图_${timestamp}.png`, 'image/png');
-    return;
-  }
-  const serializedAnnotations = serializeAnnotations(drawnLayers.value);
-  if (type === 'both') {
-    const projectStr = packageProject(currentBaseImageData, currentBaseImageWidth, currentBaseImageHeight, serializedAnnotations);
-    downloadFile(projectStr, `底图+标注层_${timestamp}.freemap`);
-  }
-};
-
 const restoreAnnotations = (annotations) => {
   if (!annotations || !Array.isArray(annotations) || !map) return;
+  const isValidPoint = (pt) => Array.isArray(pt) && pt.length >= 2 && Number.isFinite(pt[0]) && Number.isFinite(pt[1]);
   annotations.forEach(item => {
     if (!item || !item.type || !item.coords || item.coords.length === 0) {
       console.warn('跳过无效图层:', item);
+      return;
+    }
+    if (!item.coords.every(isValidPoint)) {
+      console.warn('跳过无效图层(坐标含NaN):', item.id);
       return;
     }
 
@@ -941,8 +1072,8 @@ const restoreAnnotations = (annotations) => {
         })
       };
       drawnLayers.value.push(layerData);
-      if (item.group && !groups.value.includes(item.group)) {
-        groups.value.push(item.group);
+      if (item.group && !groups.value.find(g => g.name === item.group)) {
+        groups.value.push({ id: 0, name: item.group });
       }
       layer.on('click', () => {
         const currentData = drawnLayers.value.find(d => d.id === layer.uniqueId);
@@ -964,56 +1095,37 @@ const restoreAnnotations = (annotations) => {
   });
 };
 
-// 🚨 核心新增：供 App.vue 触发强制从 IndexedDB 重新加载数据
 const refreshDataFromDB = async () => {
   if (!map || !editableLayers) return;
-  // 清空当前地图上的图层
   editableLayers.clearLayers();
   drawnLayers.value = [];
-  // 重新加载
   await loadHistoricalLayers();
 };
 
+// 导出工程时 NaN 校验 + coords 回退
 const getProjectData = () => {
   const layersWithCoords = drawnLayers.value.map(item => {
-    let coords = [];
-    const layer = item.layerRef;
-    try {
-      if (item.type === 'marker') {
-        const latlng = layer.getLatLng();
-        coords = [[latlng.lat, latlng.lng]];
-      } else if (item.type === 'rectangle') {
-         const bounds = layer.getBounds();
-         const sw = bounds.getSouthWest();
-         const ne = bounds.getNorthEast();
-         coords = [[sw.lat, sw.lng], [ne.lat, ne.lng]];
-      } else {
-         const latlngs = layer.getLatLngs();
-         const flatten = (arr) => Array.isArray(arr[0]) ? arr.map(flatten).flat(1) : arr.map(pt => [pt.lat, pt.lng]);
-         coords = flatten(latlngs);
-      }
-    } catch(e) {
-      console.warn('获取坐标失败', e);
+    let coords = extractCoordsFromLayer(item);
+
+    if (coords.length === 0 && item.coords && item.coords.length > 0) {
+      coords = item.coords;
     }
-    return {
-      ...item,
-      coords
-    };
+
+    return { ...item, coords };
   });
   
   const rawData = buildProjectFile(props.config, map, layersWithCoords, currentBaseImageData, currentBaseImageWidth, currentBaseImageHeight);
   rawData.groups = JSON.parse(JSON.stringify(groups.value));
+  rawData.fileId = props.fileId; // 🚨 核心：把当前文件编号打包进工程数据
   return JSON.parse(JSON.stringify(rawData));
 };
 
 const loadProjectData = async (projectData) => {
-  // 🚨 核心修复：鹰眼公共平台是独立工具，绝对不允许被工程文件覆盖
   if (props.config.toolId === 'geo-eagle-eye') {
     alert('“鹰眼公共平台”是独立工具，它的数据是自动永久保存的，不支持加载工程文件覆盖数据，以免造成数据丢失。');
     return;
   }
 
-  // 🚨 核心修复：防止加载新工程时覆盖当前未保存的数据
   if (drawnLayers.value.length > 0) {
     const confirmLoad = window.confirm('当前工作区有未保存的图形，加载新工程将覆盖它们。确定要继续吗？');
     if (!confirmLoad) return;
@@ -1028,13 +1140,20 @@ const loadProjectData = async (projectData) => {
     return;
   }
   
-  groups.value = (loadedGroups && Array.isArray(loadedGroups) && loadedGroups.length > 0) ? loadedGroups : ['默认'];
+  if (loadedGroups && Array.isArray(loadedGroups)) {
+    if (loadedGroups.length > 0 && typeof loadedGroups[0] === 'string') {
+      groups.value = [{ id: 1, name: '默认' }];
+      loadedGroups.forEach(g => { if (g !== '默认') groups.value.push({ id: 0, name: g }); });
+    } else {
+      groups.value = loadedGroups;
+    }
+  } else {
+    groups.value = [{ id: 1, name: '默认' }];
+  }
 
   const view = props.config.initialView || { center: [39.0123, 117.3456], zoom: 15 };
   
   const mapOptions = (baseCfg.type === 'custom-canvas')
-    ? { crs: L.CRS.Simple, minZoom: -5, maxZoom: 10, zoomControl: false, attributionControl: false, center: [0, 0], zoom: 1 }
-    : baseCfg.type === 'infinite-white'
     ? { crs: L.CRS.Simple, minZoom: -5, maxZoom: 10, zoomControl: false, attributionControl: false, center: [0, 0], zoom: 1 }
     : { center: view.center, zoom: view.zoom, zoomControl: false, attributionControl: false };
 
@@ -1044,9 +1163,7 @@ const loadProjectData = async (projectData) => {
   defaultCenter = [map.getCenter().lat, map.getCenter().lng];
   defaultZoom = map.getZoom();
 
-  if (baseCfg.type === 'infinite-white') {
-    // 无需加载任何贴图
-  } else if (baseCfg.type === 'custom-canvas' && baseCfg.customImage) {
+  if (baseCfg.type === 'custom-canvas' && baseCfg.customImage) {
     await new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
@@ -1096,7 +1213,7 @@ const loadProjectData = async (projectData) => {
     restoreAnnotations(layers);
   }
 
-  forceAutoSave(); // 🚨 加载工程后，触发一次自动保存，确保数据落地
+  forceAutoSave();
 };
 
 const saveProjectToInventoryAction = async (projectName) => {
@@ -1108,19 +1225,14 @@ const saveProjectToInventoryAction = async (projectName) => {
 defineExpose({
   getProjectData,
   loadProjectData,
-  refreshDataFromDB, // 🚨 新增暴露
+  refreshDataFromDB,
   saveProjectToInventory: saveProjectToInventoryAction
 });
 </script>
 
 <style scoped>
-/* 样式完全保持原样 */
 .map-wrapper { position: relative; width: 100%; height: 100%; padding: 0; margin: 0; overflow: hidden; flex: 1; background: #1a1a1a; }
 .map-container-div { width: 100%; height: 100%; background: #1a1a1a; }
-
-.white-canvas-bg {
-  background: #ffffff !important;
-}
 
 .custom-zoom-control { position: absolute; top: 15px; left: 15px; z-index: 1000; display: flex; flex-direction: column; background: white; border-radius: 4px; box-shadow: 0 1px 5px rgba(0,0,0,0.4); overflow: hidden; }
 .custom-zoom-control button { width: 30px; height: 30px; border: none; background: white; font-size: 18px; font-weight: bold; color: #333; cursor: pointer; border-bottom: 1px solid #ccc; display: flex; align-items: center; justify-content: center; }
@@ -1176,8 +1288,12 @@ defineExpose({
 .upload-box { background: #fff; padding: 40px 60px; border-radius: 10px; text-align: center; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
 .upload-box h2 { margin-top: 0; color: #333; }
 .upload-box p { color: #666; font-size: 14px; }
-.upload-actions { display: flex; gap: 10px; justify-content: center; margin-top: 20px; }
-.action-btn { background: #f0f0f0; color: #333; border: 1px solid #ccc; padding: 8px 16px; font-size: 14px; border-radius: 5px; cursor: pointer; transition: 0.2s; }
+.upload-actions { 
+  display: flex; 
+  gap: 10px; 
+  justify-content: center; /* 🚨 新增：让剩下的单个按钮居中 */
+  margin-top: 20px; 
+}.action-btn { background: #f0f0f0; color: #333; border: 1px solid #ccc; padding: 8px 16px; font-size: 14px; border-radius: 5px; cursor: pointer; transition: 0.2s; }
 .action-btn.primary { background: #1890ff; color: white; border-color: #1890ff; }
 .action-btn.primary:hover { background: #40a9ff; }
 .action-btn:hover { background: #e0e0e0; }
@@ -1187,9 +1303,6 @@ defineExpose({
 .custom-toolbar button:hover { background: #f0f0f0; }
 .custom-toolbar button.active { background: #e6f7ff; color: #1890ff; box-shadow: inset 0 0 0 1px #1890ff; }
 .toolbar-divider { margin: 2px 0; border: none; border-top: 1px solid #eee; }
-.save-toolbar { position: absolute; bottom: 15px; left: 150px; z-index: 1050; display: flex; gap: 8px; background: rgba(255, 255, 255, 0.9); padding: 5px 10px; border-radius: 5px; box-shadow: 0 2px 6px rgba(0,0,0,0.2); }
-.save-toolbar button { background: #f0f0f0; border: 1px solid #ccc; padding: 4px 10px; border-radius: 3px; cursor: pointer; font-size: 12px; transition: 0.2s; }
-.save-toolbar button:hover { background: #e0e0e0; }
 
 .custom-context-menu {
   position: fixed;

@@ -13,11 +13,4 @@ export const zhCN_DrawLocal = {
   }
 };
 
-// 颜色与线宽配置，方便统一修改
-export const drawStyles = {
-  polygon: { color: '#f03', fillOpacity: 0.4, weight: 2 },
-  rectangle: { color: '#ffcc00', fillOpacity: 0.4, weight: 2 },
-  // 🚨 核心修改：将折线的默认线宽从 3 改为 15（放大5倍）
-  polyline: { color: '#3388ff', weight: 15 },
-  marker: { iconSize: [24, 24] }
-};
+// 🚨 第 1 项清理：删除 drawStyles（全项目已无引用，且其中的 '#f03' 会触发 CSS 警告）

@@ -1,10 +1,16 @@
 <template>
-  <BaseMapTool ref="baseMapToolRef" :config="config" />
+  <!-- 🚨 核心：把 fileId 传递给 BaseMapTool -->
+  <BaseMapTool ref="baseMapToolRef" :config="config" :file-id="fileId" />
 </template>
 
 <script setup>
 import { ref } from 'vue';
 import BaseMapTool from './BaseMapTool.vue';
+
+// 🚨 核心：接收父组件传来的 fileId
+const props = defineProps({
+  fileId: { type: String, default: 'legacy-file' }
+});
 
 const baseMapToolRef = ref(null);
 

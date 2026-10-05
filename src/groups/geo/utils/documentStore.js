@@ -1,73 +1,54 @@
 // src/groups/geo/utils/documentStore.js
-import { safeOpenDB } from './dbMigrationManager';
+// 🚨 支持 fileId 隔离
+import {
+  getFromToolDB,
+  putToToolDB,
+  deleteFromToolDB,
+  getAllFromToolDB,
+  clearToolDB
+} from './toolDB';
+import { ensureToolMigrated } from './migrationManager';
 
-const DB_NAME = 'LiangJian_DocumentStore';
-const STORE_NAME = 'geojson_documents';
-const DB_VERSION = 3; // 之前是2
-
-const getDB = () => {
-  return safeOpenDB(
-    DB_NAME,
-    [{ name: STORE_NAME, keyPath: 'compositeKey' }],
-    DB_VERSION,
-    (db, transaction, oldVersion) => {
-      console.log('执行文档数据迁移逻辑...');
-      // 此处根据实际字段变化写入迁移逻辑
-    }
-  );
+export const saveDocument = async (toolId, fileId, annotationId, docHtml) => {
+  if (!toolId || !fileId || !annotationId) {
+    console.warn('[saveDocument] 缺少 toolId、fileId 或 annotationId');
+    return;
+  }
+  await ensureToolMigrated(toolId);
+  const id = `${fileId}_${annotationId}`; // 🚨 组合主键，保证不同文件下的图形文档互不干扰
+  await putToToolDB(toolId, 'documents', { id, fileId, annotationId, docHtml });
 };
 
-const buildKey = (toolId, annotationId) => `${toolId || 'default'}::${annotationId}`;
-
-export const saveDocument = async (toolId, annotationId, docHtml) => {
-  const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    const compositeKey = buildKey(toolId, annotationId);
-    const request = store.put({ compositeKey, toolId: toolId || 'default', annotationId, docHtml });
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
+export const getDocument = async (toolId, fileId, annotationId) => {
+  if (!toolId || !fileId || !annotationId) return null;
+  await ensureToolMigrated(toolId);
+  const id = `${fileId}_${annotationId}`;
+  const rec = await getFromToolDB(toolId, 'documents', id);
+  return rec ? rec.docHtml : null;
 };
 
-export const getDocument = async (toolId, annotationId) => {
-  const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const store = tx.objectStore(STORE_NAME);
-    const compositeKey = buildKey(toolId, annotationId);
-    const request = store.get(compositeKey);
-    request.onsuccess = () => resolve(request.result ? request.result.docHtml : null);
-    request.onerror = () => reject(request.error);
-  });
-};
-
-export const deleteDocument = async (toolId, annotationId) => {
-  const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    const compositeKey = buildKey(toolId, annotationId);
-    const request = store.delete(compositeKey);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
+export const deleteDocument = async (toolId, fileId, annotationId) => {
+  if (!toolId || !fileId || !annotationId) return;
+  await ensureToolMigrated(toolId);
+  const id = `${fileId}_${annotationId}`;
+  await deleteFromToolDB(toolId, 'documents', id);
 };
 
 export const clearAllDocuments = async (toolId) => {
-  const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    const request = store.openCursor();
-    request.onsuccess = (event) => {
-      const cursor = event.target.result;
-      if (cursor) {
-        if (!toolId || cursor.value.toolId === toolId) cursor.delete();
-        cursor.continue();
-      } else resolve();
-    };
-    request.onerror = () => reject(request.error);
-  });
+  if (!toolId) return;
+  await ensureToolMigrated(toolId);
+  await clearToolDB(toolId, 'documents');
+};
+
+// 可选：批量读取该工具所有文档（备用于信息数据库全量拉取优化）
+export const getAllDocuments = async (toolId, fileId = null) => {
+  if (!toolId) return [];
+  await ensureToolMigrated(toolId);
+  const list = await getAllFromToolDB(toolId, 'documents');
+  
+  // 🚨 如果传了 fileId，则只过滤出当前文件的文档
+  if (fileId) {
+    return list.filter(doc => doc.fileId === fileId);
+  }
+  return list;
 };

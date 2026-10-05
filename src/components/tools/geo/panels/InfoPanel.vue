@@ -22,16 +22,39 @@
       <div v-if="selectedLayer" class="edit-section">
         <div class="field-group">
           <label>对象名称（必填）</label>
-          <input type="text" v-model="localObjectName" @change="updateLayerData('objectName', localObjectName)" placeholder="默认名称" class="field-input" />
+          <!-- 🚨 修复：@change → @input -->
+          <input 
+            type="text" 
+            v-model="localObjectName" 
+            @input="handleObjectNameInput" 
+            placeholder="默认名称" 
+            class="field-input" 
+          />
         </div>
         
         <div class="fields-container">
           <div v-for="(field, index) in localFields" :key="index" class="info-field">
             <div class="field-label">
-              <input type="text" v-model="field.label" @focus="selectAll($event)" @change="updateField(index, 'label', field.label)" :placeholder="`信息的名称${index + 1}`" class="field-input-small" />
+              <!-- 🚨 修复：@change → @input -->
+              <input 
+                type="text" 
+                v-model="field.label" 
+                @focus="selectAll($event)" 
+                @input="handleFieldInput(index, 'label', field.label)" 
+                :placeholder="`信息的名称${index + 1}`" 
+                class="field-input-small" 
+              />
             </div>
             <div class="field-value">
-              <input type="text" v-model="field.value" @focus="selectAll($event)" @change="updateField(index, 'value', field.value)" :placeholder="`信息内容${index + 1}`" class="field-input-small" />
+              <!-- 🚨 修复：@change → @input -->
+              <input 
+                type="text" 
+                v-model="field.value" 
+                @focus="selectAll($event)" 
+                @input="handleFieldInput(index, 'value', field.value)" 
+                :placeholder="`信息内容${index + 1}`" 
+                class="field-input-small" 
+              />
             </div>
           </div>
         </div>
@@ -102,9 +125,10 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue';
+// 🚨 修复：加入 onBeforeUnmount
+import { ref, watch, onBeforeUnmount } from 'vue';
 import MapPanel from './MapPanel.vue';
-import { exportToExcel } from '../../../../groups/geo/utils/excelExporter.js';
+import { exportToExcel } from '../../../../groups/geo/utils/exporter.js';
 
 const props = defineProps({
   layers: { type: Array, default: () => [] },
@@ -124,6 +148,10 @@ const isConfirmOpen = ref(false);
 const pendingFormat = ref(null);
 const historyRef = ref([]);
 const canUndo = ref(false);
+
+// 🚨 新增：防抖定时器（防止每次按键都触发 IndexedDB 写入）
+let debounceTimer = null;
+const DEBOUNCE_DELAY = 300;
 
 const loadFormats = () => {
   const saved = localStorage.getItem('excalidraw_format_templates');
@@ -180,6 +208,38 @@ const updateField = (index, key, value) => {
   localFields.value[index][key] = value;
   updateLayerData('fields', JSON.parse(JSON.stringify(localFields.value)));
 };
+
+// 🚨 新增：对象名称输入防抖处理器
+const handleObjectNameInput = () => {
+  if (!selectedLayer.value) return;
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    updateLayerData('objectName', localObjectName.value);
+  }, DEBOUNCE_DELAY);
+};
+
+// 🚨 新增：字段输入防抖处理器
+const handleFieldInput = (index, key, value) => {
+  if (!selectedLayer.value) return;
+  // 立即更新本地字段，保证 UI 响应
+  localFields.value[index][key] = value;
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    updateField(index, key, value);
+  }, DEBOUNCE_DELAY);
+};
+
+// 🚨 新增：组件卸载前强制刷出未提交的修改
+onBeforeUnmount(() => {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+    if (selectedLayer.value) {
+      updateLayerData('objectName', localObjectName.value);
+      updateLayerData('fields', JSON.parse(JSON.stringify(localFields.value)));
+    }
+  }
+});
 
 const selectAll = (e) => { e.target.select(); };
 

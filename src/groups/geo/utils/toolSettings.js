@@ -65,7 +65,7 @@ export const getMergedToolConfig = (toolId, toolDefaultConfig = {}) => {
 
 // 6种图形元素的默认样式配置
 export const DEFAULT_STYLES = {
-  polygon: { color: '#f03', fillColor: '#f03', fillOpacity: 0.4, weight: 2 },
+  polygon: { color: '#ff0033', fillColor: '#ff0033', fillOpacity: 0.4, weight: 2 },
   rectangle: { color: '#ffcc00', fillColor: '#ffcc00', fillOpacity: 0.4, weight: 2 },
   polyline: { color: '#3388ff', weight: 15 },
   circle: { color: '#3388ff', fillColor: '#3388ff', fillOpacity: 0.2, weight: 2 },
@@ -76,12 +76,41 @@ export const DEFAULT_STYLES = {
 const STORAGE_KEY_STYLES = 'liangjian_default_styles';
 const savedStyles = JSON.parse(localStorage.getItem(STORAGE_KEY_STYLES) || '{}');
 
-// 核心修复：使用深度合并，确保即使旧版本数据缺少某些字段，新版本也能使用默认值补全
+// 🚨 第 1 项修复：把所有 3 位简写 CSS 颜色升级为 6 位（#f03 → #ff0033）
+const normalizeColor = (c) => {
+  if (typeof c !== 'string') return c;
+  const m = c.match(/^#([0-9a-fA-F]{3})$/);
+  if (m) {
+    const [r, g, b] = m[1].split('');
+    return `#${r}${r}${g}${g}${b}${b}`;
+  }
+  return c;
+};
+
+const cleanupSavedStyles = (raw) => {
+  const clean = {};
+  Object.keys(raw).forEach(type => {
+    clean[type] = { ...raw[type] };
+    if (clean[type].color)     clean[type].color     = normalizeColor(clean[type].color);
+    if (clean[type].fillColor) clean[type].fillColor = normalizeColor(clean[type].fillColor);
+  });
+  return clean;
+};
+
+const cleanedSavedStyles = cleanupSavedStyles(savedStyles);
+
+// 如果清理后和原始不同，写回 localStorage，永久消除脏数据
+if (JSON.stringify(cleanedSavedStyles) !== JSON.stringify(savedStyles)) {
+  localStorage.setItem(STORAGE_KEY_STYLES, JSON.stringify(cleanedSavedStyles));
+  console.log('[toolSettings] 已自动升级 localStorage 中的简写颜色值');
+}
+
+// 深度合并（用清理后的数据）
 const mergedStyles = {};
 Object.keys(DEFAULT_STYLES).forEach(type => {
   mergedStyles[type] = {
     ...DEFAULT_STYLES[type],
-    ...(savedStyles[type] || {})
+    ...(cleanedSavedStyles[type] || {})
   };
 });
 

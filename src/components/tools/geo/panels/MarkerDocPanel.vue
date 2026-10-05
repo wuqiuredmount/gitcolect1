@@ -92,6 +92,7 @@
         class="doc-editor"
         contenteditable="true"
         placeholder="开始编写您的文档..."
+        @dblclick="handleEditorDblClick"
       ></div>
 
       <!-- 底部操作区 -->
@@ -111,16 +112,34 @@
       </transition>
     </div>
   </transition>
+
+  <!-- 全屏图片预览弹窗 -->
+  <div 
+    v-if="previewVisible" 
+    class="preview-overlay" 
+    @wheel.prevent="handlePreviewWheel" 
+    @mousedown="handlePreviewMouseDown"
+  >
+    <img 
+      :src="previewSrc" 
+      class="preview-image" 
+      :style="previewImageStyle" 
+      @dblclick.stop="closePreview"
+    />
+    <div class="preview-tips">滚轮缩放 | 拖拽移动 | 双击关闭</div>
+    <button class="preview-close-btn" @click.stop="closePreview">✕</button>
+  </div>
 </template>
 
 <script setup>
-import { ref, watch, nextTick, onBeforeUnmount } from 'vue';
+import { ref, watch, nextTick, onBeforeUnmount, computed } from 'vue';
 import { saveDocument, getDocument } from '../../../../groups/geo/utils/documentStore.js';
 import { MARKER_ICONS } from '../../../../groups/geo/utils/markerIcons.js';
 
 const props = defineProps({
   node: { type: Object, default: null },
-  toolId: { type: String, default: 'default' }
+  toolId: { type: String, default: 'default' },
+  fileId: { type: String, default: 'default-file' } // 🚨 新增：接收文件编号
 });
 
 const emit = defineEmits(['close', 'update:title', 'update:content', 'update:style']);
@@ -131,6 +150,24 @@ const localTitle = ref('');
 const isStyleExpanded = ref(false);
 const localStyle = ref({ color: '#3388ff', fillColor: '#3388ff', fillOpacity: 0.2, weight: 3, iconType: 0, iconSize: 32 });
 const showSaveToast = ref(false);
+
+// 图片预览状态
+const previewVisible = ref(false);
+const previewSrc = ref('');
+const scale = ref(1);
+const translateX = ref(0);
+const translateY = ref(0);
+const isDragging = ref(false);
+const startX = ref(0);
+const startY = ref(0);
+
+const previewImageStyle = computed(() => {
+  return {
+    transform: `translate(${translateX.value}px, ${translateY.value}px) scale(${scale.value})`,
+    cursor: isDragging.value ? 'grabbing' : 'grab',
+    transition: isDragging.value ? 'none' : 'transform 0.1s ease-out'
+  };
+});
 
 const setEditorContent = (html) => {
   if (docEditorRef.value) {
@@ -144,32 +181,22 @@ const setEditorContent = (html) => {
   }
 };
 
-// 🚨 核心修复：利用 watch 的 oldNode 闭包特性，在切换前安全保存旧数据，然后再加载新数据
 watch(() => props.node, async (newNode, oldNode) => {
-  // 如果 ID 相同（只是父组件数据突变），不需要重新加载
   if (newNode && oldNode && newNode.id === oldNode.id) return;
 
-  // 1. 切换前，精准保存旧节点数据
   if (oldNode && docEditorRef.value) {
-    const finalTitle = localTitle.value.trim(); // 允许保存空字符串
+    const finalTitle = localTitle.value.trim();
     let html = docEditorRef.value.innerHTML;
     if (html === '<br>' || html === '<p><br></p>') html = '';
-
-    // 写入 IndexedDB，使用老节点的 ID
-    await saveDocument(props.toolId, oldNode.id, html);
-    
-    // 携带老节点 ID 触发更新
+    await saveDocument(props.toolId, props.fileId, oldNode.id, html); // 🚨 传入 fileId
     emit('update:title', { id: oldNode.id, title: finalTitle });
     emit('update:content', { id: oldNode.id, docHtml: html });
   }
 
-  // 2. 加载新节点数据
   if (newNode) {
     const nodeId = newNode.id;
     const toolId = props.toolId;
     const title = newNode.title;
-    
-    // 🚨 核心修改：直接赋值，如果为空则显示占位符
     localTitle.value = title || '';
     
     if (newNode.style) {
@@ -179,7 +206,7 @@ watch(() => props.node, async (newNode, oldNode) => {
       };
     }
 
-    const storedHtml = await getDocument(toolId, nodeId);
+    const storedHtml = await getDocument(toolId, props.fileId, nodeId); // 🚨 传入 fileId
     const initialHtml = storedHtml || newNode.docHtml || '';
     nextTick(() => {
       setEditorContent(initialHtml);
@@ -187,14 +214,12 @@ watch(() => props.node, async (newNode, oldNode) => {
   }
 }, { immediate: true });
 
-// 处理用户直接点击“X”关闭面板的静默自动保存
 onBeforeUnmount(async () => {
   if (props.node && docEditorRef.value) {
-    const finalTitle = localTitle.value.trim(); // 允许保存空字符串
+    const finalTitle = localTitle.value.trim();
     let html = docEditorRef.value.innerHTML;
     if (html === '<br>' || html === '<p><br></p>') html = '';
-
-    await saveDocument(props.toolId, props.node.id, html);
+    await saveDocument(props.toolId, props.fileId, props.node.id, html); // 🚨 传入 fileId
     emit('update:title', { id: props.node.id, title: finalTitle });
     emit('update:content', { id: props.node.id, docHtml: html });
   }
@@ -212,26 +237,73 @@ const getIconPreview = (svgStr) => {
 const handleUndo = () => { if (docEditorRef.value) { docEditorRef.value.focus(); document.execCommand('undo', false, null); } };
 const handleRedo = () => { if (docEditorRef.value) { docEditorRef.value.focus(); document.execCommand('redo', false, null); } };
 const triggerImageUpload = () => { imageInputRef.value.click(); };
+
 const handleImageUpload = (event) => {
   const file = event.target.files[0]; if (!file) return;
   if (file.size > 5 * 1024 * 1024) { alert('单张图片建议不超过 5MB!'); return; }
   const reader = new FileReader();
   reader.onload = (e) => {
-    const imgTag = `<img src="${e.target.result}" style="display: block; max-width: 100%; border-radius: 2px; margin: 5px 0;" /><br/>`;
+    const imgTag = `<img src="${e.target.result}" alt="插入图片" /><br/>`;
     if (docEditorRef.value) { docEditorRef.value.focus(); document.execCommand('insertHTML', false, imgTag); }
   };
   reader.readAsDataURL(file); event.target.value = '';
+};
+
+const handleEditorDblClick = (e) => {
+  if (e.target.tagName === 'IMG') {
+    previewSrc.value = e.target.src;
+    previewVisible.value = true;
+    scale.value = 1;
+    translateX.value = 0;
+    translateY.value = 0;
+  }
+};
+
+const handlePreviewWheel = (e) => {
+  const delta = e.deltaY > 0 ? -0.1 : 0.1;
+  scale.value = Math.min(Math.max(0.2, scale.value + delta), 5); 
+};
+
+const handlePreviewMouseDown = (e) => {
+  if (e.target.tagName === 'IMG') {
+    isDragging.value = true;
+    startX.value = e.clientX - translateX.value;
+    startY.value = e.clientY - translateY.value;
+    document.addEventListener('mousemove', handlePreviewMouseMove);
+    document.addEventListener('mouseup', handlePreviewMouseUp);
+  }
+};
+
+const handlePreviewMouseMove = (e) => {
+  if (isDragging.value) {
+    translateX.value = e.clientX - startX.value;
+    translateY.value = e.clientY - startY.value;
+  }
+};
+
+const handlePreviewMouseUp = () => {
+  isDragging.value = false;
+  document.removeEventListener('mousemove', handlePreviewMouseMove);
+  document.removeEventListener('mouseup', handlePreviewMouseUp);
+};
+
+const closePreview = () => {
+  previewVisible.value = false;
+  previewSrc.value = '';
+  scale.value = 1;
+  translateX.value = 0;
+  translateY.value = 0;
 };
 
 const handleSave = async (silent = false) => {
   if (docEditorRef.value && props.node) {
     const nodeId = props.node.id;
     const toolId = props.toolId;
-    const finalTitle = localTitle.value.trim(); // 允许保存空字符串
+    const finalTitle = localTitle.value.trim();
     let html = docEditorRef.value.innerHTML;
     if (html === '<br>' || html === '<p><br></p>') html = '';
 
-    await saveDocument(toolId, nodeId, html);
+    await saveDocument(toolId, props.fileId, nodeId, html); // 🚨 传入 fileId
     emit('update:title', { id: nodeId, title: finalTitle }); 
     emit('update:content', { id: nodeId, docHtml: html });
 
@@ -286,6 +358,7 @@ const handleExportDocx = () => {
 .doc-editor::-webkit-scrollbar-track { background: #f1f1f1; }
 .doc-editor:empty::before { content: attr(placeholder); color: #aaa; pointer-events: none; display: block; }
 .doc-editor:empty:focus::before { content: ""; }
+.doc-editor :deep(img) { max-width: 100% !important; height: auto !important; display: block; margin: 8px 0; border-radius: 4px; cursor: zoom-in; box-sizing: border-box; user-select: none; }
 .doc-actions { background: #f8f9fa; border-top: 1px solid #ddd; padding: 10px 15px; display: flex; flex-direction: column; gap: 10px; }
 .doc-footer-info { font-size: 11px; color: #666; }
 .doc-footer-info p { margin: 2px 0; }
@@ -309,4 +382,9 @@ const handleExportDocx = () => {
 .icon-item { width: 36px; height: 36px; border: 1px solid #ddd; border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; background: #fff; transition: all 0.2s; }
 .icon-item:hover { border-color: #1890ff; background: #e6f7ff; }
 .icon-item.active { border-color: #1890ff; background: #bae0ff; box-shadow: 0 0 0 1px #1890ff; }
+.preview-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.85); z-index: 99999; display: flex; justify-content: center; align-items: center; overflow: hidden; user-select: none; }
+.preview-image { max-width: 90vw; max-height: 90vh; object-fit: contain; will-change: transform; user-select: none; }
+.preview-close-btn { position: absolute; top: 20px; right: 30px; background: rgba(255, 255, 255, 0.2); border: 1px solid rgba(255, 255, 255, 0.5); color: #fff; font-size: 24px; width: 40px; height: 40px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: 0.2s; z-index: 100000; }
+.preview-close-btn:hover { background: rgba(255, 255, 255, 0.4); transform: scale(1.1); }
+.preview-tips { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); color: rgba(255, 255, 255, 0.7); font-size: 14px; background: rgba(0, 0, 0, 0.5); padding: 8px 16px; border-radius: 20px; pointer-events: none; }
 </style>

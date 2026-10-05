@@ -1,92 +1,77 @@
 // src/groups/geo/utils/annotationStore.js
-import { safeOpenDB } from './dbMigrationManager';
+// 🚨 新增 fileId 隔离支持 + 兜底保护 + 旧数据兼容
+import { TOOL_ORDER } from './toolRegistry';
+import {
+  getAllFromToolDB,
+  replaceAllInToolDB
+} from './toolDB';
+import { ensureToolMigrated } from './migrationManager';
 
-const DB_NAME = 'LiangJian_AnnotationStore';
-const STORE_NAME = 'geo_annotations';
-const DB_VERSION = 2; // 每次修改数据结构，务必手动+1
+// 保存某工具某文件的所有图形（原子替换）
+export const saveAllLayers = async (toolId, fileId, layers) => {
+  if (!Array.isArray(layers)) {
+    console.error('[saveAllLayers] layers 必须是数组，当前为:', typeof layers);
+    return;
+  }
+  if (!toolId) {
+    console.error('[saveAllLayers] toolId 缺失，拒绝执行保存操作！');
+    return;
+  }
+  
+  // 🚨 核心修复：如果 fileId 丢失，使用兜底值，防止数据无法保存
+  const safeFileId = fileId || 'legacy-file'; 
+  if (!fileId) {
+    console.warn('[saveAllLayers] fileId 缺失，已自动回退到 legacy-file，请检查前端传参。');
+  }
 
-const getDB = () => {
-  return safeOpenDB(
-    DB_NAME,
-    [{ 
-      name: STORE_NAME, 
-      keyPath: 'id', 
-      indexes: [{ name: 'toolId', keyPath: 'toolId', options: { unique: false } }] 
-    }],
-    DB_VERSION,
-    (db, transaction, oldVersion, newVersion) => {
-      // 【迁移逻辑写在这里】
-      // 示例：从 v1 升级到 v2 时，为所有旧数据补充 group 字段
-      console.log('执行标注数据迁移逻辑...');
-      const store = transaction.objectStore(STORE_NAME);
-      
-      if (oldVersion < 2) {
-        store.openCursor().onsuccess = (e) => {
-          const cursor = e.target.result;
-          if (cursor) {
-            const data = cursor.value;
-            if (data.group === undefined) {
-              data.group = '默认';
-            }
-            cursor.update(data);
-            cursor.continue();
-          }
-        };
-      }
-    }
-  );
-};
+  await ensureToolMigrated(toolId);
 
-export const saveAllLayers = async (toolId, layers) => {
-  const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-
-    // 1. 先清除该工具下的旧数据
-    if (toolId) {
-      const index = store.index('toolId');
-      const request = index.openKeyCursor(IDBKeyRange.only(toolId));
-      request.onsuccess = (event) => {
-        const cursor = event.target.result;
-        if (cursor) {
-          store.delete(cursor.primaryKey);
-          cursor.continue();
-        }
-      };
-    } else {
-      store.clear();
-    }
-
-    // 2. 写入新数据
-    for (const layer of layers) {
-      store.put({ ...layer, toolId });
-    }
-
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+  // 1. 获取该工具下所有历史数据
+  const allData = await getAllFromToolDB(toolId, 'annotations');
+  
+  // 2. 剔除当前文件的历史数据，保留其他文件的数据（使用 safeFileId 过滤）
+  const otherFilesData = allData.filter(item => item.fileId !== safeFileId);
+  
+  // 3. 剥离 layerRef + JSON 深度净化，并给当前图层打上 fileId 标签
+  const purified = layers.map(layer => {
+    const { layerRef, ...rest } = layer;
+    return JSON.parse(JSON.stringify({ ...rest, fileId: safeFileId, toolId }));
   });
+
+  // 4. 合并并写回
+  await replaceAllInToolDB(toolId, 'annotations', [...otherFilesData, ...purified]);
 };
 
-export const getAllLayers = async (toolId) => {
-  const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const store = tx.objectStore(STORE_NAME);
-
-    if (toolId) {
-      const index = store.index('toolId');
-      const request = index.getAll(IDBKeyRange.only(toolId));
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    } else {
-      const request = store.getAll();
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
+// 读取某工具某文件的所有图形
+export const getAllLayers = async (toolId, fileId = null) => {
+  if (!toolId) {
+    // 不带 toolId：遍历所有工具返回（用于信息数据库全量拉取）
+    const all = [];
+    for (const tid of TOOL_ORDER) {
+      await ensureToolMigrated(tid);
+      const list = await getAllFromToolDB(tid, 'annotations');
+      all.push(...list.map(l => ({ ...l, toolId: tid })));
     }
-  });
+    return all;
+  }
+
+  await ensureToolMigrated(toolId);
+  const list = await getAllFromToolDB(toolId, 'annotations');
+  
+  // 🚨 核心修复：严格按 fileId 隔离
+  if (fileId) {
+    // 如果正在加载 'legacy-file'（旧数据兼容区），则同时加载没有 fileId 的旧数据
+    if (fileId === 'legacy-file') {
+      return list.filter(l => l.fileId === fileId || !l.fileId);
+    }
+    // 如果是任何一个新文件，绝对不加载没有 fileId 的旧数据！
+    return list.filter(l => l.fileId === fileId);
+  }
+  
+  return list; // 不传 fileId 时返回全部（用于信息数据库）
 };
 
-export const clearAllLayers = async (toolId) => {
-  return saveAllLayers(toolId, []);
+// 清空某工具某文件的所有图形
+export const clearAllLayers = async (toolId, fileId) => {
+  return saveAllLayers(toolId, fileId, []);
 };

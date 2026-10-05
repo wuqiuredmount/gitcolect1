@@ -1,7 +1,7 @@
 {
   "name": "app100-multifunction",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "main": "electron-main.cjs",
   "type": "module",
   "scripts": {
@@ -16,6 +16,7 @@
     "leaflet-draw": "^1.0.4",
     "vue": "^3.5.42",
     "vue-leaflet": "^0.1.0",
+    "vue-router": "^4.6.4",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
@@ -31,15 +32,27 @@
     "appId": "com.liangjian.app",
     "productName": "良件-空间信息共享与集成",
     "directories": {
-      "output": "D:/liangjian-setup"
+      "output": "D:/liangjian-setup",
+      "buildResources": "public"
     },
+    "files": [
+      "dist/**/*",
+      "electron-main.cjs",
+      "package.json"
+    ],
     "win": {
-      "target": "nsis"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "createDesktopShortcut": true,
+      "shortcutName": "良件-空间信息共享与集成"
     }
   }
 }
