@@ -8,9 +8,52 @@
     <title>良件-空间信息共享与集成</title>
     <script>
       // 🖊️ Excalidraw 字体自托管（Electron 离线必需）
-      // 字体已拷贝到 public/excalidraw-fonts/（9 个字体族，含中文 Xiaolai）。
-      // 相对路径以适配 Electron file:// 打包后的 base:'./'。
-      window.EXCALIDRAW_ASSET_PATH = './excalidraw-fonts/';
+      // 字体在 public/fonts/ → 构建后 dist/fonts/（234 个 .woff2，含中文 Xiaolai）。
+      //
+      // 🚨 为什么必须「动态计算」且「不带尾斜杠」——文档目录前缀：
+      //
+      //   Excalidraw 内部（chunk-K2UTITRG.js）：
+      //     · fontUri 形如 './fonts/Excalifont/xxx.woff2'
+      //     · createUrls:  n = fontUri.replace(/^\/+/, '')   // 仅剥开头 '/'，'./' 保留！
+      //     · 若 base 以 './' 或 '/' 开头：
+      //         base = new URL(base.replace(/^\.?\//, ''), window.location.origin)
+      //     · 最后 base = base.replace(/\/+$/,'') + '/'   ← 恒追加尾斜杠
+      //     · 最终 new URL(n, base)
+      //
+      //   三个坑叠加后，写死任何常量的情形：
+      //     ┌ base ┐        dev (origin=http://localhost:5173)        打包 (origin='null'*)
+      //     │ '/'  │  ✅ .../fonts/            ❌ .../dist/index.html/fonts/   ← index.html 被当目录
+      //     │ './' │  ✅ .../fonts/            ❌ .../dist/index.html/fonts/
+      //     │ 目录前缀       │ ✅ .../fonts/        ✅ .../dist/fonts/      ← 正解（本文件采用）
+      //     │ （旧值：指向字体目录名）❌ ❌ 双重嵌套，两种模式都坏（即原 bug）
+      //   * file:// 下 window.location.origin 为字符串 'null'，不可解析，
+      //     浏览器退化为以「页面 URL」解析；而 normalizeBaseUrl 又追加 '/'，
+      //     于是 '…/dist/index.html' 变成 '…/dist/index.html/'（把文件当目录）。
+      //
+      //   ✅ 正解（见下方赋值）。但**只取「文档目录」在 dev 下仍然错**，
+      //      因为本项目用了 vue-router 的 createWebHistory()，路径形如
+      //      `http://localhost:5173/gis/whiteboard`：
+      //        location.href  → …/gis/whiteboard
+      //        取「文档目录」  → …/gis            ← ❌ /gis 是**路由前缀**，不是真实目录！
+      //        Excalidraw 再补 '/fonts/' → http://localhost:5173/gis/fonts/…  ❌ 404
+      //        （实测报错 Failed to decode downloaded font: …/gis/fonts/…）
+      //      而 Vite 的静态资源（public/）恒定挂在**站点根**，与路由无关：
+      //        dev  → http://localhost:5173/fonts/…    ✅ 实测 HTTP 200
+      //      故必须按「协议 + 主机」取根，而不是按当前路由路径取目录。
+      //
+      //   ✅ 最终策略（按协议分流，两种模式都对）：
+      //     · http(s)（浏览器 dev / 线上）：取 origin → 'http://localhost:5173'
+      //     · file://（Electron 打包）：location.origin 是字符串 'null'（不可解析），
+      //       只能退化为「取文档所在目录」→ 'file:///…/dist'（与 index.html 同级，正确）
+      //     两者都**不带尾斜杠**，由 Excalidraw 的 normalizeBaseUrl 自己补。
+      (function () {
+        var href = window.location.href.replace(/[?#][\s\S]*$/, ''); // 去 query / hash
+        var pathPrefix = href.replace(/[^/]*$/, '').replace(/\/+$/, ''); // 文档所在目录（去尾斜杠）
+        var origin = window.location.origin;
+        // 仅当 origin 是可用的「协议://主机」时采用（file:// 下为 'null'，须排除）
+        var usable = /^https?:\/\//.test(origin);
+        window.EXCALIDRAW_ASSET_PATH = usable ? origin : pathPrefix;
+      })();
     </script>
   </head>
   <body>

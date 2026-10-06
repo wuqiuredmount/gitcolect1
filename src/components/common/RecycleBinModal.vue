@@ -79,6 +79,10 @@ import { appendLayers } from '../../groups/geo/utils/annotationStore.js';
 import { saveDocument } from '../../groups/geo/utils/documentStore.js';
 import { executeDataCommand } from '../../groups/geo/utils/aiDataCommand.js';
 import { TOOL_META, TOOL_ORDER } from '../../groups/geo/utils/toolRegistry.js';
+// 🖊️ 白板：恢复时同步还原画布元素（T1 修复）
+import { restoreElementsToBoard } from '../../groups/whiteboard/utils/elementSync.js';
+import { getAllBoards, WB_LEGACY_BOARD_ID } from '../../groups/whiteboard/utils/boardStore.js';
+import { getBounds, getCanvas } from '../../groups/whiteboard/utils/boardSettings.js';
 
 const props = defineProps({
   visible: { type: Boolean, default: false }
@@ -202,6 +206,64 @@ const loadItems = async () => {
   items.value = all;
 };
 
+// 取当前白板编号（白板工具为单白板场景，与 WhiteboardTool 的 ensureDefaultBoard 同源）
+const pickBoardId = async () => {
+  try {
+    const boards = await getAllBoards();
+    return (boards[0] && boards[0].boardId) || WB_LEGACY_BOARD_ID;
+  } catch (e) {
+    return WB_LEGACY_BOARD_ID;
+  }
+};
+
+// 取当前换算基准（bounds / canvas），用于 wbElementRaw 缺失时的近似重建
+const getRegisteredElementsWithBoard = async () => {
+  let restored = null;
+  try {
+    restored = { bounds: await getBounds(), canvas: await getCanvas() };
+  } catch (e) {
+    restored = null;
+  }
+  return { restored };
+};
+
+// 通知白板组件重建 idMap（若当前正打开白板）。GisApp 会把白板实例挂在 #wb-refresh-hook
+const notifyWhiteboardRefresh = async () => {
+  try {
+    const hook = window.__wbRefreshHook;
+    if (typeof hook === 'function') await hook();
+  } catch (e) {
+    console.warn('[回收站] 通知白板刷新失败:', e);
+  }
+};
+
+// 🚨 T1+T2【核心修复】恢复时同步还原白板画布元素
+// 背景：白板元素被删除时只是打 isDeleted 标记、物理上仍在 scene 数组里，
+//   旧版恢复流程只把记录搬回 annotations/documents，**没碰 scene**，
+//   导致下次 syncScene 又把它判定为「已删除」→ 二次进回收站（隐性循环）。
+// 现在：恢复后按 wbElementId 擦除 scene 中的 isDeleted 标记（有 wbElementRaw 则精确补回），
+//   再重建 element↔annotation 映射，使白板侧刷新后不会重复登记、也不会重复删除。
+const restoreWhiteboardScene = async (item) => {
+  const layer = item.layer || {};
+  const elementId = layer.wbElementId;
+  if (!elementId) return null; // 地图元素没有 wbElementId，直接跳过
+  try {
+    const boardId = await pickBoardId();
+    const { restored } = await getRegisteredElementsWithBoard();
+    const result = await restoreElementsToBoard(boardId, [elementId], {
+      rawMap: item.wbElementRaw ? new Map([[elementId, item.wbElementRaw]]) : new Map(),
+      bounds: restored?.bounds || null,
+      canvas: restored?.canvas || null
+    });
+    // 让白板组件重建 idMap，避免下一次 onChange 把恢复的元素当成新元素重复登记
+    await notifyWhiteboardRefresh();
+    return result;
+  } catch (e) {
+    console.warn('[回收站] 白板场景还原失败（记录已恢复，画布需手动同步）:', e);
+    return null;
+  }
+};
+
 const handleRecover = async (item) => {
   try {
     if (!item.layer || !item.layer.id) {
@@ -214,9 +276,17 @@ const handleRecover = async (item) => {
     if (item.docHtml) {
       await saveDocument(item.toolId, item.fileId, item.annotationId, item.docHtml);
     }
-    // 3. 从回收站移除
+    // 3. 🖊️ 白板元素：同步把画布元素还原（擦除 isDeleted / 用 wbElementRaw 精确补回）
+    const wbResult = await restoreWhiteboardScene(item);
+    // 4. 从回收站移除
     await purgeFromRecycleBin(item.toolId, item.fileId, item.annotationId);
-    message.value = `已恢复：${getItemName(item)}`;
+    let tip = `已恢复：${getItemName(item)}`;
+    if (wbResult) {
+      if (wbResult.revived > 0) tip += '（画布已精确还原）';
+      else if (wbResult.rebuilt > 0) tip += '（画布已重建）';
+      else if (wbResult.missing && wbResult.missing.length) tip += '（⚠️ 画布元素缺失，请回到白板检查）';
+    }
+    message.value = tip;
     await loadItems();
     emit('changed');
   } catch (e) {

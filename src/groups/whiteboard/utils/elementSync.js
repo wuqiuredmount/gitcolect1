@@ -19,7 +19,11 @@ import { reserveSequence } from '../../geo/utils/systemStore.js';
 import { formatGraphicId } from '../../geo/utils/toolRegistry.js';
 import { buildFingerprint, isValidFingerprint } from '../../geo/utils/fingerprint.js';
 import { findExistingFingerprints, registerFingerprints, unregisterFingerprints } from '../../geo/utils/fingerprintStore.js';
-import { canvasToLatLng, getElementAnchor, getElementGeometry, isValidBounds, isValidCanvas } from './coordinate.js';
+import { canvasToLatLng, getElementAnchor, getElementGeometry, isValidBounds, isValidCanvas, latLngToCanvas } from './coordinate.js';
+// 🚨 T1：恢复时需读写白板场景。此处用静态 import（原为动态 import），
+//    因为 coordinate.js / boardStore.js 早已被本文件与 WhiteboardTool 静态引用，
+//    动态 import 不产生分块收益，反而会触发 Vite 的 INEFFECTIVE_DYNAMIC_IMPORT 警告。
+import { getBoard, saveBoard, getAllBoards, WB_LEGACY_BOARD_ID } from './boardStore.js';
 
 export const WB_TOOL_ID = 'wb-whiteboard';
 
@@ -218,6 +222,9 @@ export const buildDefaultDocHtml = (element, name) => {
  * @param {object} opts.canvas         - { canvasWidth, canvasHeight }
  * @param {string} opts.fileId         - 白板所在文件区（默认 legacy-file）
  * @param {boolean} [opts.autoRegister=true] - 是否自动为「已命名」新元素编号入库
+ * @param {boolean} [opts.allowDelete=true]  - 🚨【防御层 2】是否允许执行「删除分支」。
+ *   调用方在画布尚未就绪（首帧空场景 / setScene 未完成）时必须传 false，
+ *   否则 aliveIds 为空集 → idMap 全部命中 → 误把已登记元素批量软删除进回收站。
  * @returns {Promise<{registered:number, skipped:number, removed:string[], updated:number}>}
  */
 export const syncScene = async ({
@@ -226,7 +233,8 @@ export const syncScene = async ({
   bounds,
   canvas,
   fileId = 'legacy-file',
-  autoRegister = true
+  autoRegister = true,
+  allowDelete = true
 }) => {
   const result = { registered: 0, skipped: 0, removed: [], updated: 0 };
   if (!idMap) return result;
@@ -237,6 +245,12 @@ export const syncScene = async ({
   const safeFileId = fileId || 'legacy-file';
 
   // ---------- 1. 已删除元素：进回收站 + 清富文本 + 注销指纹 ----------
+  // 🚨【防御层 2】整块删除逻辑受 allowDelete 门控。
+  //   本段是纯「集合差」判定：aliveIds 为空（空场景/首帧）时 idMap 中每个 id
+  //   都会被判为「已消失」→ 全量软删除。画布未就绪时调用方必须传 allowDelete:false。
+  //   ⚠️ 若后续仍误删，第一嫌疑是 sanitizeElements 静默丢弃含循环引用的元素
+  //      （excalidrawBridge.js:57-70），可先用 syncNow 手动同步对照验证。
+  if (allowDelete) {
   const aliveIds = new Set(list.filter(e => e && !e.isDeleted).map(e => e.id));
   const deletedElementIds = [];
   idMap.byElement.forEach((annotationId, elementId) => {
@@ -245,6 +259,11 @@ export const syncScene = async ({
 
   if (deletedElementIds.length > 0) {
     const all = await getAllLayers(WB_TOOL_ID, safeFileId) || [];
+    // 补丁①：scene 中仍能找到原始元素对象（Excalidraw 删除只是打 isDeleted 标记，
+    //   元素本身还留在数组里）→ 逐 id 建立 element.id → 原始元素 的索引，
+    //   随回收站一起深拷贝留档，供恢复时「精确还原」。
+    const rawById = new Map();
+    list.forEach(el => { if (el && el.id) rawById.set(el.id, el); });
     const removedIds = new Set();
     for (const elementId of deletedElementIds) {
       const annotationId = idMap.getAnnotationId(elementId);
@@ -257,7 +276,10 @@ export const syncScene = async ({
         //   ② deleteDocument（从 documents 表显式删除富文本）
         //   ③ unregisterFingerprints（从 fingerprints 表显式释放指纹，不能只靠后面 saveAllLayers 数量变少）
         // 注：本循环内不能直接 saveAllLayers，故统一放在循环外的 ④
-        try { await moveToRecycleBin(WB_TOOL_ID, safeFileId, layer, docHtml); } catch (e) { /* 忽略 */ }
+        // 补丁②：第 5 个参数 = 原始 Excalidraw 元素深拷贝（带文字的框 → 恢复后文字不丢）
+        try {
+          await moveToRecycleBin(WB_TOOL_ID, safeFileId, layer, docHtml, rawById.get(elementId) || null);
+        } catch (e) { /* 忽略 */ }
         try { await deleteDocument(WB_TOOL_ID, safeFileId, annotationId); } catch (e) { /* 忽略 */ }
         try { await unregisterFingerprints(WB_TOOL_ID, [layer]); } catch (e) { /* 忽略 */ }
         removedIds.add(annotationId);
@@ -271,6 +293,7 @@ export const syncScene = async ({
       console.log(`[elementSync] 白板元素软删除完成：${removedIds.size} 个（回收站/富文本/指纹/图形表已同步清理）`);
     }
   }
+  } // 🚨【防御层 2】end if (allowDelete)
 
 
   // ---------- 2. 新增 / 更新分流 ----------
@@ -460,7 +483,177 @@ export const registerElement = async ({
   return layer;
 };
 
-// 读取某文件区下白板已登记的全部元素（供信息栏 / 详情面板使用）
+/**
+ * 把「已恢复的 wbElementId 集合」同步回白板场景：
+ *   - 元素在 scene 中且 isDeleted=true → 擦除标记（精确还原，最理想）
+ *   - 元素在 scene 中且已正常      → 无需处理
+ *   - 元素不在 scene 中            → 用 wbElementRaw 补回，否则按坐标近似重建
+ *
+ * @param {string} boardId                - 白板编号（WB-B.00001）
+ * @param {Array<string>} wbElementIds    - 已恢复元素的 Excalidraw element.id 列表
+ * @param {object} [opts]
+ * @param {Map<string,object>} [opts.rawMap] - wbElementId → 原始元素（来自 wbElementRaw）
+ * @param {object} [opts.bounds]          - 近似重建用地理范围
+ * @param {object} [opts.canvas]          - 近似重建用画布基准尺寸
+ * @returns {Promise<{revived:number, rebuilt:number, missing:string[], scene:Array}>}
+ */
+export const restoreElementsToBoard = async (boardId, wbElementIds, opts = {}) => {
+  const result = { revived: 0, rebuilt: 0, missing: [], scene: [] };
+  if (!boardId || !Array.isArray(wbElementIds) || wbElementIds.length === 0) return result;
+
+  const board = await getBoard(boardId);
+  if (!board) {
+    result.missing = wbElementIds.slice();
+    return result;
+  }
+
+  const scene = Array.isArray(board.scene) ? board.scene.slice() : [];
+  const indexById = new Map();
+  scene.forEach((el, i) => { if (el && el.id) indexById.set(el.id, i); });
+
+  const rawMap = opts.rawMap || new Map();
+  const canRebuild = isValidBounds(opts.bounds) && isValidCanvas(opts.canvas);
+
+  for (const elementId of wbElementIds) {
+    if (!elementId) continue;
+    const idx = indexById.get(elementId);
+
+    // 情况 1：元素还在 scene 里（只是挂着 isDeleted）→ 擦除标记即可精确还原
+    //        这是 T1 的关键：不重建、不丢文字、不改宽高样式
+    if (idx !== undefined) {
+      const el = scene[idx];
+      if (el && el.isDeleted) {
+        scene[idx] = { ...el, isDeleted: false, updated: Date.now() };
+        result.revived++;
+      }
+      continue;
+    }
+
+    // 情况 2：元素已不在 scene（极端情况：用户删除后清过画布 / 换了白板）
+    //        优先用 wbElementRaw 精确补回；没有 raw 才降级近似重建
+    const raw = rawMap.get(elementId);
+    if (raw && raw.id === elementId) {
+      // 补丁：wbElementRaw 是删除时的完整深拷贝 → 原样塞回，文字/样式/宽高全保留
+      scene.push({ ...raw, isDeleted: false, updated: Date.now() });
+      indexById.set(elementId, scene.length - 1);
+      result.rebuilt++;
+      continue;
+    }
+
+    result.missing.push(elementId);
+  }
+
+  result.scene = scene;
+  result._canRebuild = canRebuild;
+  result._board = board;
+  return await finalizeRestore(board, scene, result, opts, canRebuild);
+};
+
+// 收尾：兜底近似重建（降级路径）+ 落库
+const finalizeRestore = async (board, scene, result, opts, canRebuild) => {
+  if (result.missing.length > 0 && canRebuild) {
+    const layers = await getAllLayers(WB_TOOL_ID, board.fileId || 'legacy-file') || [];
+    const rest = [];
+    for (const elementId of result.missing) {
+      const layer = layers.find(l => l.wbElementId === elementId);
+      if (!layer || !Number.isFinite(Number(layer.lat)) || !Number.isFinite(Number(layer.lng))) {
+        rest.push(elementId);
+        continue;
+      }
+      const pt = latLngToCanvas({ lat: layer.lat, lng: layer.lng }, opts.bounds, opts.canvas);
+      if (!pt) { rest.push(elementId); continue; }
+      // 近似重建：几何可恢复，**文字内容无法恢复**（这正是补丁 wbElementRaw 要解决的痛点）
+      scene.push({
+        id: elementId,
+        type: String(layer.wbType || 'rectangle'),
+        x: pt.x,
+        y: pt.y,
+        width: Number(layer.wbW) || 100,
+        height: Number(layer.wbH) || 60,
+        angle: 0,
+        strokeColor: '#1e1e1e',
+        backgroundColor: 'transparent',
+        fillStyle: 'solid',
+        strokeWidth: 2,
+        strokeStyle: 'solid',
+        roughness: 1,
+        opacity: 100,
+        groupIds: [],
+        frameId: null,
+        roundness: null,
+        seed: Math.floor(Math.random() * 2 ** 31),
+        version: 1,
+        versionNonce: Math.floor(Math.random() * 2 ** 31),
+        isDeleted: false,
+        boundElements: null,
+        updated: Date.now(),
+        link: null,
+        locked: false,
+        customData: {
+          ...(layer.customData || {}),
+          name: layer.objectName || layer.title,
+          _rebuiltFrom: 'coordinate'
+        }
+      });
+      result.rebuilt++;
+    }
+    result.missing = rest;
+  }
+
+  // 写回白板场景（只在真的改了东西时才写库，避免无意义 IO）
+  if (result.revived > 0 || result.rebuilt > 0) {
+    await saveBoard({
+      boardId: board.boardId,
+      fileId: board.fileId,
+      name: board.name,
+      bounds: board.bounds,
+      canvas: board.canvas,
+      appState: board.appState,
+      scene
+    });
+  }
+
+  result.scene = scene;
+  delete result._canRebuild;
+  delete result._board;
+  return result;
+};
+
+/**
+ * 便捷封装：给定一批已恢复的回收站记录，批量还原其画布元素
+ * @param {Array<object>} recycleRecords - 回收站记录数组（含 layer.wbElementId / wbElementRaw）
+ * @param {object} [opts] - { boardId, bounds, canvas }
+ * @returns {Promise<{revived:number, rebuilt:number, missing:string[], scene:Array}>}
+ */
+export const restoreRecycledElements = async (recycleRecords, opts = {}) => {
+  const list = Array.isArray(recycleRecords) ? recycleRecords : [];
+  const ids = [];
+  const rawMap = new Map();
+
+  list.forEach(rec => {
+    if (!rec) return;
+    const layer = rec.layer || {};
+    const elementId = layer.wbElementId;
+    if (!elementId) return;
+    ids.push(elementId);
+    // 补丁字段：删除时深拷贝的完整原始元素（老记录没有 → 走近似重建降级）
+    if (rec.wbElementRaw && rec.wbElementRaw.id === elementId) {
+      rawMap.set(elementId, rec.wbElementRaw);
+    }
+  });
+
+  if (ids.length === 0) return { revived: 0, rebuilt: 0, missing: [], scene: [] };
+
+  const boards = await getAllBoards();
+  const boardId = opts.boardId || (boards[0] && boards[0].boardId) || WB_LEGACY_BOARD_ID;
+
+  return await restoreElementsToBoard(boardId, ids, {
+    rawMap,
+    bounds: opts.bounds,
+    canvas: opts.canvas
+  });
+};
+
 export const getRegisteredElements = async (fileId = 'legacy-file') => {
   try {
     return await getAllLayers(WB_TOOL_ID, fileId || 'legacy-file') || [];
@@ -469,3 +662,23 @@ export const getRegisteredElements = async (fileId = 'legacy-file') => {
     return [];
   }
 };
+
+// ==========================================================================
+// 🚨 T1【核心修复】回收站恢复 → 同步还原画布元素（解决「恢复后被自动删除第二遍」）
+// ==========================================================================
+//
+// 【隐性循环成因】（修复前）
+//   1. 白板删除元素：Excalidraw 把它标记 isDeleted=true，但**物理上仍留在 scene 数组里**，
+//      同时 elementSync 把它从 annotations 表移除、写入回收站。
+//   2. 用户点「恢复」：annotations 表加回了记录，但 **board.scene 里那枚元素仍是
+//      isDeleted=true**（恢复流程压根没碰 scene）。
+//   3. 下次 runSync 触发 syncScene：
+//      - idMap（重启后由 rebuildIdMap 重建）已包含刚恢复的元素 → 进入删除分支
+//      - aliveIds 由 `!e.isDeleted` 计算，该元素 isDeleted 仍为 true → 不在集合内
+//      - 于是被判定为「已删除」，**第二次写进回收站并被移出 annotations**
+//      → 表现为「恢复成功后刷一下就又没了」，且回收站出现重复记录。
+//
+// 【修复策略】恢复时把 scene 中对应元素的 isDeleted 擦除，使其重新进入 aliveIds。
+//   本函数**只做最小改动**：仅在 isDeleted 为真时改写，不重建元素、不动其它字段。
+// ==========================================================================
+

@@ -22,6 +22,9 @@ const emit = defineEmits(['change', 'api-ready']);
 const host = ref(null);
 let instance = null;
 let api = null;
+// 🚨【防御层 3b】watch 在 api 未就绪时不再直接 return（旧代码会永久丢弃这次变更），
+//   改为打标记，等 onApiReady 里补执行。
+let sceneDirty = false;
 
 onMounted(() => {
   if (!host.value) return;
@@ -33,6 +36,16 @@ onMounted(() => {
     uiOptions: props.uiOptions,
     onApiReady: (nextApi) => {
       api = nextApi;
+      // 🚨【防御层 3b】无条件把 initialScene 灌进画布。
+      //   理由：父组件可能在画布创建之后才拿到 scene（异步读库），
+      //   或 initialScene 在挂载时仍是空数组。此处以「权威数据」姿态重放一次，
+      //   保证画布里一定是 props.initialScene 对应的场景，不残留空场景快照。
+      applyScene(api, props.initialScene, props.initialAppState);
+      // 补执行：api 就绪前被 watch 拦下的场景替换请求
+      if (sceneDirty) {
+        sceneDirty = false;
+        applyScene(api, props.initialScene, props.initialAppState);
+      }
       emit('api-ready', nextApi);
     },
     onChange: (elements, appState) => {
@@ -73,9 +86,14 @@ const scrollToElement = (elementId) => {
 };
 
 // 监听初始场景被外部替换（例如切换白板时）→ 整体刷新画布
+// 🚨【防御层 3b】旧代码 `if (!api) return` 在 api 尚未就绪时会把这次变更永久丢弃，
+//   首帧救不回。现改为打 dirty 标记，由 onApiReady 补执行。
 watch(() => props.initialScene, (next, prev) => {
-  if (!api) return;
   if (next === prev) return;
+  if (!api) {
+    sceneDirty = true;
+    return;
+  }
   applyScene(api, next, props.initialAppState);
 }, { deep: false });
 

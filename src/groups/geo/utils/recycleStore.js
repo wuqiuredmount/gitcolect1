@@ -10,21 +10,39 @@ import { ensureToolMigrated } from './migrationManager';
 const recycleKey = (fileId, annotationId) => `${fileId}_${annotationId}`;
 
 // 把一条图形 + 富文本移入回收站（单事务，先写回收站）
-export const moveToRecycleBin = async (toolId, fileId, layer, docHtml = '') => {
+//
+// 🚨 补丁字段 wbElementRaw（2026-10-06，用户裁决①）
+//   - 用途：白板元素被删除时，Excalidraw 的原始元素对象在此做**完整深拷贝**留档。
+//     恢复时若有 raw 则原样塞回 board.scene，实现「精确还原」；
+//     无 raw（老记录）则降级为按 lat/lng 近似重建（几何可恢复，文字会丢）。
+//   - 体积代价：可接受。每个元素多存一份 JSON，典型量级 0.5–2 KB/个；
+//     带文字的容器（容器 + 其 bound text 各一条）约 3–6 KB/个；
+//     回收站常态只有几十至数百条，且清空回收站即释放，总量可控。
+//   - 兼容性：本字段为新增可选参数，缺省 undefined，不影响地图元素的回收站记录。
+export const moveToRecycleBin = async (toolId, fileId, layer, docHtml = '', wbElementRaw = null) => {
   if (!toolId || !fileId || !layer || !layer.id) return;
   await ensureToolMigrated(toolId);
   const db = await openToolDB(toolId);
   return new Promise((resolve, reject) => {
     const tx = db.transaction('recyclebin', 'readwrite');
     const store = tx.objectStore('recyclebin');
-    store.put({
+    const record = {
       id: recycleKey(fileId, layer.id),
       fileId,
       annotationId: layer.id,
       deletedAt: new Date().toISOString(),
       layer: JSON.parse(JSON.stringify(layer)),
       docHtml: docHtml || ''
-    });
+    };
+    // 补丁：白板原始元素深拷贝（地图元素传空 → 不写该字段，记录体积不变）
+    if (wbElementRaw && typeof wbElementRaw === 'object') {
+      try {
+        record.wbElementRaw = JSON.parse(JSON.stringify(wbElementRaw));
+      } catch (e) {
+        console.warn('[recycleStore] wbElementRaw 深拷贝失败，已跳过（恢复将走近似重建）:', e);
+      }
+    }
+    store.put(record);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
