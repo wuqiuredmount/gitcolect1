@@ -6,6 +6,12 @@
     <link rel="icon" type="image/png" href="/icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>良件-空间信息共享与集成</title>
+    <script>
+      // 🖊️ Excalidraw 字体自托管（Electron 离线必需）
+      // 字体已拷贝到 public/excalidraw-fonts/（9 个字体族，含中文 Xiaolai）。
+      // 相对路径以适配 Electron file:// 打包后的 base:'./'。
+      window.EXCALIDRAW_ASSET_PATH = './excalidraw-fonts/';
+    </script>
   </head>
   <body>
     <div id="app"></div>

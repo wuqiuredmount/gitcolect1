@@ -26,18 +26,23 @@ AI 指令可操作 / 信息数据库可见。
 
 ## 三、待完成任务（按顺序）
 
-### 任务 1：elementSync.js 改为全登记【最高优先】
+### 任务 1：elementSync.js 改为全登记【最高优先】✅ 已完成（2026-10-06）
 - 去掉 isRegisterable 里「必须有名字」的条件
 - getElementName 空时返回 element.id 兜底
 - buildAnnotation 的 name 字段用兜底值
 - 保持：删除时显式 unregisterFingerprints、坐标换算失败不登记
 - 验收：画一个不命名的矩形，打开信息数据库应能看到它
+- 实测：17/17 断言通过（无名元素指纹有效 v4-xxx、不同 element.id 指纹不碰撞、bounds 缺失仍跳过）
+- 提交：929ef6b
 
-### 任务 2：字体自托管
+### 任务 2：字体自托管 ✅ 已完成（2026-10-06）
 - 把 node_modules/@excalidraw/excalidraw/dist/prod/fonts 拷到 public/excalidraw-fonts/
 - 在启动处设 window.EXCALIDRAW_ASSET_PATH = './excalidraw-fonts/'
 - 9 个字体族全拷，中文依赖 Xiaolai 必须包含
 - 验收：Electron 离线打开白板，中文文字能正常显示
+- 实测：234 个文件 / 12.5 MB 全部就位（Xiaolai 209 个），build 后 dist/excalidraw-fonts 含全部 9 族；
+        index.html 内联脚本已写入且相对路径未被 Vite 改写
+- 提交：（见下一次 commit）
 
 ### 任务 3：GisApp.vue 懒加载接线
 - 保持 /gis/whiteboard 路由
