@@ -183,7 +183,7 @@
             <p class="hint">为每个地图工具独立配置需要显示的辅助小工具，修改后切换或刷新工具即可看到效果。</p>
             
             <div class="widgets-config-container">
-              <div v-for="tool in validTools" :key="tool.id" class="tool-config-block">
+              <div v-for="tool in allToolsWithWhiteboard" :key="tool.id" class="tool-config-block">
                 <div class="tool-config-title">{{ tool.name }}</div>
                 <div class="widget-switches-grid">
                   <label v-for="widget in ALL_WIDGETS" :key="widget.key" class="widget-switch-label">
@@ -278,7 +278,7 @@
     <!-- 信息数据库弹窗 -->
     <InfoDatabase 
       :visible="isDatabaseOpen" 
-      :tools="validTools"
+      :tools="allToolsWithWhiteboard"
       :all-layers="currentFlatLayers"
       @close="isDatabaseOpen = false"
       @update-layer="handleDatabaseUpdate"
@@ -302,7 +302,7 @@
 </template>
 
 <script setup>
-import { ref, shallowRef, markRaw, computed, reactive, watch, onMounted, onUnmounted } from 'vue';
+import { ref, shallowRef, markRaw, computed, reactive, watch, onMounted, onUnmounted, defineAsyncComponent } from 'vue';
 import { useRoute } from 'vue-router';
 
 import ChinaMapTool from '../components/tools/geo/ChinaMapTool.vue';
@@ -311,6 +311,20 @@ import ChinaProvinceMapTool from '../components/tools/geo/ChinaProvinceMapTool.v
 import CustomCanvasTool from '../components/tools/geo/CustomCanvasTool.vue';
 import ChinaStandardMapTool from '../components/tools/geo/ChinaStandardMapTool.vue';
 import EagleEyeMapTool from '../components/tools/geo/EagleEyeMapTool.vue';
+
+// 🖊️ 第三产品（Excalidraw 白板）：懒加载，不进 groups 静态数组，
+//    保证首屏不加载 React / Excalidraw（白板体积大且自带 React 运行时）。
+const WhiteboardTool = defineAsyncComponent(() =>
+  import('../groups/whiteboard/WhiteboardTool.vue')
+);
+
+// 🖊️ 白板「虚拟分组」：只用于顶栏标题与下拉展示，不放进 groups 数组
+const WHITEBOARD_GROUP_ID = 'whiteboard';
+const WHITEBOARD_TOOL = markRaw({
+  id: 'wb-whiteboard',
+  name: '1. Excalidraw 白板',
+  component: WhiteboardTool
+});
 
 import InfoDatabase from '../components/common/InfoDatabase.vue';
 import PendingUnplacedModal from '../components/common/PendingUnplacedModal.vue';
@@ -417,8 +431,27 @@ const groups = ref([
 ]);
 
 const currentGroup = computed(() => {
+  // 🖊️ 白板走「虚拟分组」，不进 groups 数组
+  if (currentGroupId.value === WHITEBOARD_GROUP_ID) {
+    return { id: WHITEBOARD_GROUP_ID, name: '🖊️ Excalidraw 白板', tools: [WHITEBOARD_TOOL] };
+  }
   return groups.value.find(g => g.id === currentGroupId.value);
 });
+
+// 🖊️ 统一工具查找：先查 groups 静态数组，再兜底白板虚拟工具
+const findToolById = (toolId) => {
+  if (toolId === WHITEBOARD_TOOL.id) return WHITEBOARD_TOOL;
+  let found = null;
+  groups.value.forEach(group => {
+    group.tools.forEach(tool => {
+      if (tool.id === toolId) found = tool;
+    });
+  });
+  return found;
+};
+
+// 🖊️ 全部工具（含白板），供信息数据库 / 小工具开关使用
+const allToolsWithWhiteboard = computed(() => [...validTools.value, WHITEBOARD_TOOL]);
 
 groups.value.forEach(group => {
   group.tools.forEach(tool => {
@@ -437,6 +470,16 @@ onMounted(async () => {
   }
 
   const targetGroupId = route.params.groupId || 'geo';
+
+  // 🖊️ 白板：/gis/whiteboard 走懒加载虚拟工具，不进 groups 静态数组
+  if (targetGroupId === WHITEBOARD_GROUP_ID) {
+    currentGroupId.value = WHITEBOARD_GROUP_ID;
+    currentTool.value = WHITEBOARD_TOOL;
+    currentFileId.value = 'legacy-file';
+    document.addEventListener('click', closeToolDropdown);
+    return;
+  }
+
   const targetGroup = groups.value.find(g => g.id === targetGroupId);
   
   if (targetGroup) {
@@ -503,12 +546,8 @@ const closeCurrentTool = () => {
 };
 
 const handleInventorySwitchTool = (toolId) => {
-  let targetTool = null;
-  groups.value.forEach(group => {
-    group.tools.forEach(tool => {
-      if (tool.id === toolId) targetTool = tool;
-    });
-  });
+  // 🖊️ 统一查找，白板也能被库存/数据库切换命中
+  const targetTool = findToolById(toolId);
   if (targetTool) {
     currentTool.value = targetTool;
   }
@@ -533,9 +572,10 @@ watch(isInventoryOpen, (val) => {
   else isLoadingProject.value = false;
 });
 
+// 🖊️ 同时统计白板元素（getAllLayers 按 id 聚合，白板元素 toolId 固定为 wb-whiteboard）
 const loadAllLayersFromDB = async () => {
   const all = [];
-  for (const tool of validTools.value) {
+  for (const tool of allToolsWithWhiteboard.value) {
     const layers = await getAllLayers(tool.id);
     if (layers && layers.length > 0) {
       for (const l of layers) {
@@ -686,12 +726,8 @@ const handleProjectImport = (event) => {
 };
 
 const openProject = async (proj) => {
-  let targetTool = null;
-  groups.value.forEach(group => {
-    group.tools.forEach(tool => {
-      if (tool.id === proj.toolId) targetTool = tool;
-    });
-  });
+  // 🖊️ 白板为独立功能区，无「工程文件」概念，走统一查找也不会命中 groups 里的工具
+  const targetTool = findToolById(proj.toolId);
 
   if (!targetTool) {
     alert(`未找到该工程对应的工具：${proj.toolId}，无法加载。`);

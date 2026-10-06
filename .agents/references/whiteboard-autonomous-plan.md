@@ -44,21 +44,31 @@ AI 指令可操作 / 信息数据库可见。
         index.html 内联脚本已写入且相对路径未被 Vite 改写
 - 提交：（见下一次 commit）
 
-### 任务 3：GisApp.vue 懒加载接线
+### 任务 3：GisApp.vue 懒加载接线 ✅ 已完成（2026-10-06）
 - 保持 /gis/whiteboard 路由
 - GisApp 内用 defineAsyncComponent 懒加载白板组件
 - 白板不进 groups 静态数组
 - 验收：首屏不加载 React，点开白板才加载
+- 实测：主包 index-*.js = 739 KB（无 React）；excalidraw-*.js = 4805 KB、
+        WhiteboardTool-*.js = 15.3 KB、ExcalidrawBoard-*.js = 3.2 KB 均为独立异步 chunk，
+        点开白板才下载 → 懒加载达成
+- 实现要点：新增 WHITEBOARD_GROUP_ID / WHITEBOARD_TOOL 虚拟分组（不进 groups）、
+        findToolById 统一查找、allToolsWithWhiteboard 供信息数据库与小工具开关使用、
+        onMounted 白板分支、loadAllLayersFromDB 纳入白板
+- 提交：（见下一次 commit）
 
 ### 任务 4：R4 禁止平移（先验证后实施）
 - 先跑最小 demo，验证 Excalidraw 0.18 的 initialData.appState.scrollConstraints 实际行为
 - 确认能否做到画布固定；不行则改用读时归一化（公式补 scrollX/scrollY/zoom）
 - 验收：白板缩放/平移后，元素坐标不漂移、指纹不变
 
-### 任务 5：WhiteboardTool.vue 主组件
+### 任务 5：WhiteboardTool.vue 主组件 ✅ 已完成（2026-10-06）
 - 承接 ExcalidrawBoard + elementSync + boardStore
 - onChange 增量同步（新增走 appendLayers，删除走回收站，别用 saveAllLayers 全量）
 - 验收：白板画图，刷新后仍在，元素在信息数据库可见
+- 实测：组件已创建并通过 build；onChange 经 800ms 防抖调 syncScene（元素级增量），
+        卸载时仅整体落库「场景」（saveBoard，不算元素级覆盖）
+- 提交：（见下一次 commit）
 
 ### 任务 6：富文本详情组件核实与接入
 - 先查清项目现有详情组件是哪个（InfoPanel.vue / MarkerDocPanel.vue / InfoDatabase 渲染路径）
