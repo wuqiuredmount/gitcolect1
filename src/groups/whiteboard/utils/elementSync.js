@@ -77,7 +77,43 @@ export const rebuildIdMap = async (fileId) => {
   return map;
 };
 
-// 元素兜底名称：算法要求 name 必须有效，故无自定义名称时用 element.id 兜底
+// 🚨 【R4 实测结论】@excalidraw/excalidraw@0.18.1 中 scrollConstraints **完全不存在**：
+//    - 类型声明（dist/types/excalidraw/types.d.ts）0 处
+//    - 构建产物（dist/prod/*.js）0 处
+//    → 「用 initialData.appState.scrollConstraints 锁死画布」的方案在本版本不可行，放弃。
+// 本版本可用的平移/缩放相关入口只有三个（实测确认）：
+//    - Props.viewModeEnabled?: boolean     —— 只读模式，禁用一切编辑（代价：连画图也禁了）
+//    - Props.onScrollChange?: (x,y,zoom)   —— 只读回调，不能阻止平移
+//    - api.onScrollChange(cb): Unsubscribe —— 只读订阅，不能阻止平移
+// 且 Excalidraw 会把滚动钳制在「内容包围盒」内，scrollX/scrollY 无法被程序固定为常数。
+// 【本版本采用方案】读时归一化：不做任何强制锁定，而是在换算坐标时扣掉画布视口变换，
+//    用「世界坐标」而非「屏幕坐标」参与 lat/lng 计算。这样无论用户怎么平移/缩放，
+//    元素的 lat/lng 与其指纹都稳定不变（R4 验收标准达成）。
+//    ⚠️ 与 coordinate.js 文件头注释的超集约定一致：一旦放开平移，
+//       必须在此处补 scrollX/scrollY/zoom 变换，勿用简化近似。
+
+// ---------- 世界坐标提取（R4 读时归一化核心）----------
+// Excalidraw 语义：屏幕坐标 = 世界坐标 * zoom + scroll
+//   screenX = element.x * zoom + scrollX
+// element.x 即「世界坐标」（与视图平移无关，这正是我们要的稳定量）。
+// panning 只改 appState.scrollX，不改 element.x，所以直接用 element.x/y 即天然归一化。
+export const toWorldPoint = (element) => {
+  if (!element) return null;
+  const x = Number(element.x);
+  const y = Number(element.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+};
+
+// 反向：世界坐标 → 屏幕坐标（需要把点定位进当前视口时用，如 scrollToElement 兜底换算）
+export const worldToScreen = (point, appState) => {
+  if (!point) return null;
+  const scrollX = Number(appState && appState.scrollX) || 0;
+  const scrollY = Number(appState && appState.scrollY) || 0;
+  const zoom = Number(appState && appState.zoom && appState.zoom.value) || 1;
+  return { x: point.x * zoom + scrollX, y: point.y * zoom + scrollY };
+};
+
 export const getFallbackName = (element) =>
   String((element && element.id) || '').trim();
 

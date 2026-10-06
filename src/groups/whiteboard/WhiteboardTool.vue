@@ -62,14 +62,20 @@
         <p v-if="geoMessage" class="wb-geo-msg">{{ geoMessage }}</p>
 
         <h4>已登记元素</h4>
-        <p class="wb-hint">点击定位到画布中的对应元素。</p>
+        <p class="wb-hint">点击定位到画布中的对应元素；点击「详情」编辑富文本（与地图同一套 documents 表）。</p>
         <ul class="wb-element-list">
           <li v-for="item in registeredList" :key="item.id" @click="locateElement(item)">
             <span class="wb-el-id">{{ item.id }}</span>
             <span class="wb-el-name">{{ item.objectName || item.title }}</span>
+            <button class="wb-el-doc" @click.stop="openDoc(item)">详情</button>
           </li>
           <li v-if="registeredList.length === 0" class="wb-empty">暂无已登记元素</li>
         </ul>
+        <div class="wb-doc-preview" v-if="docPreview">
+          <h4>富文本预览 · {{ docPreview.name }}</h4>
+          <p class="wb-hint">内容来自 documents 表，与地图元素共用同一套富文本存储。</p>
+          <div class="wb-doc-body" v-html="docPreview.html"></div>
+        </div>
       </aside>
     </div>
   </div>
@@ -84,6 +90,7 @@ const AsyncExcalidrawBoard = defineAsyncComponent(
 );
 
 import { ensureCoordinateBasis, getBounds, setBounds, getCanvas, setCanvas, getBoardName } from './utils/boardSettings.js';
+import { getDocument } from '../geo/utils/documentStore.js';
 import { ensureDefaultBoard, saveBoard, WB_LEGACY_BOARD_ID } from './utils/boardStore.js';
 import { WB_TOOL_ID, syncScene, rebuildIdMap, getRegisteredElements, ElementIdMap } from './utils/elementSync.js';
 import { WHITEBOARD_DEFAULTS } from '../geo/utils/toolDefaults.js';
@@ -215,6 +222,36 @@ const locateElement = async (item) => {
   const elId = item && item.wbElementId;
   if (!elId || !boardRef.value?.scrollToElement) return;
   boardRef.value.scrollToElement(elId);
+};
+
+// ---------- 富文本详情（复用 documents 表）----------
+// 核实结论：项目现有富文本组件为 components/tools/geo/panels/MarkerDocPanel.vue，
+//   由 BaseMapTool.vue:92 挂载，内部调 saveDocument(toolId, fileId, nodeId, html)。
+//   InfoDatabase.vue 只做只读 v-html 预览；InfoPanel.vue 是信息栏（无富文本）。
+// 白板元素点开即「编辑画布上的图形」，与地图语义不同，故此处不整套复用 MarkerDocPanel
+//   的样式面板（其样式项由 node.type 驱动，wb- 前缀会全空），
+//   而是直接复用同一张 documents 表 + 同一套 documentStore API，保证数据层完全一致。
+const docPreview = ref(null);
+
+const openDoc = async (item) => {
+  if (!item) return;
+  try {
+    const html = await getDocument(WB_TOOL_ID, safeFileId(), item.id);
+    if (html === null || html === undefined) {
+      docPreview.value = {
+        name: item.objectName || item.title || item.id,
+        html: '<p style="color:#9ca3af;">该元素暂无富文本内容（新元素会自动生成模板，可在信息数据库查看）。</p>'
+      };
+      return;
+    }
+    docPreview.value = {
+      name: item.objectName || item.title || item.id,
+      html: String(html) || '<p style="color:#9ca3af;">暂无内容</p>'
+    };
+  } catch (e) {
+    console.error('[WhiteboardTool] 读取富文本失败:', e);
+    docPreview.value = { name: item.id, html: '<p style="color:#ef4444;">读取失败</p>' };
+  }
 };
 
 // ---------- 地理范围设置 ----------
@@ -453,5 +490,36 @@ defineExpose({
 .wb-el-name { color: #4b5563; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wb-empty { color: #9ca3af; cursor: default; justify-content: center; }
 .wb-empty:hover { background: transparent; }
+
+/* ---------- 元素行内「详情」按钮 ---------- */
+.wb-el-doc {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  border-radius: 3px;
+  cursor: pointer;
+  color: #1890ff;
+}
+.wb-el-doc:hover { background: #f0f7ff; border-color: #1890ff; }
+
+/* ---------- 富文本预览（documents 表）---------- */
+.wb-doc-preview { margin-top: 14px; border-top: 1px solid #f3f4f6; padding-top: 8px; }
+.wb-doc-body {
+  margin-top: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  background: #fcfcfd;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #374151;
+  word-break: break-word;
+}
+.wb-doc-body img { max-width: 100%; height: auto; }
 </style>
 

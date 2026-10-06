@@ -51,6 +51,10 @@ export const latLngToCanvas = (latlng, bounds, canvas) => {
 };
 
 // 取元素的地理锚点 = 元素左上角（Excalidraw 原生 x/y 语义；点元素即其自身位置）
+// 🚨【R4 读时归一化】固定只取 element.x/y（世界坐标，不含 scroll/zoom）。
+//    Excalidraw 的 element.x/y 本身就是世界坐标，平移视图只改 appState.scrollX/scrollY，
+//    不改 element.x/y —— 故此处天然归一化：白板平移/缩放后元素 lat/lng 与指纹均不漂移。
+//    若日后改用屏幕坐标（如 e.clientX 换算），必须在此显式扣除 scroll/zoom，勿用近似。
 export const getElementAnchor = (element) => {
   if (!element) return null;
   const x = Number(element.x);

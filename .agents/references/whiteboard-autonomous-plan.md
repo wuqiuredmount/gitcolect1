@@ -57,10 +57,26 @@ AI 指令可操作 / 信息数据库可见。
         onMounted 白板分支、loadAllLayersFromDB 纳入白板
 - 提交：（见下一次 commit）
 
-### 任务 4：R4 禁止平移（先验证后实施）
+### 任务 4：R4 禁止平移（先验证后实施）✅ 已完成（2026-10-06）
 - 先跑最小 demo，验证 Excalidraw 0.18 的 initialData.appState.scrollConstraints 实际行为
 - 确认能否做到画布固定；不行则改用读时归一化（公式补 scrollX/scrollY/zoom）
 - 验收：白板缩放/平移后，元素坐标不漂移、指纹不变
+
+**实测结论（决定性）**：`scrollConstraints` 在 `@excalidraw/excalidraw@0.18.1` 中**完全不存在**：
+- `dist/types/excalidraw/types.d.ts` 中 0 处
+- `dist/prod/*.js` 构建产物中 0 处
+→ 「锁死画布」方案在本版本不可行，**已放弃**。
+本版本仅有的平移/缩放入口（实测）：`Props.viewModeEnabled`（只读，会连画图一起禁掉）、
+`Props.onScrollChange`（只读回调）、`api.onScrollChange`（只读订阅）——三者都无法阻止平移。
+且 Excalidraw 把滚动钳制在「内容包围盒」内，scrollX/scrollY 无法被程序固定为常数。
+
+**采用方案：读时归一化**（不强制锁定，换算时用世界坐标）
+- Excalidraw 语义：`screenX = element.x * zoom + scrollX`；`element.x` 即世界坐标
+- 平移只改 `appState.scrollX/scrollY`，**不改 element.x/y** → 直接用 element.x/y 即天然归一化
+- 新增 `toWorldPoint()` / `worldToScreen()`（elementSync.js），`getElementAnchor` 补 R4 注释
+- **实测 8/8 断言通过**：4 种视口（原始/平移/放大2.5x/缩小0.4x+平移）下 lat/lng 与指纹完全一致
+  （恒为 39.225000 / 117.200000 / v4-0525a92bd7ab1fd5）；元素真实移动时指纹仍会改变（同步未失效）
+- 提交：（见下一次 commit）
 
 ### 任务 5：WhiteboardTool.vue 主组件 ✅ 已完成（2026-10-06）
 - 承接 ExcalidrawBoard + elementSync + boardStore
@@ -70,9 +86,27 @@ AI 指令可操作 / 信息数据库可见。
         卸载时仅整体落库「场景」（saveBoard，不算元素级覆盖）
 - 提交：（见下一次 commit）
 
-### 任务 6：富文本详情组件核实与接入
+### 任务 6：富文本详情组件核实与接入 ✅ 已完成（2026-10-06）
 - 先查清项目现有详情组件是哪个（InfoPanel.vue / MarkerDocPanel.vue / InfoDatabase 渲染路径）
 - 确认后复用，不重造
+
+**核实结论（全仓搜索 saveDocument 调用点得出，非猜测）**：
+
+| 候选 | 实际用途 | 是否被使用 |
+|---|---|---|
+| **`components/tools/geo/panels/MarkerDocPanel.vue`** | **富文本编辑器本体**（contenteditable + 撤销/重做 + 插入图片 + 导出 Word），内部调 `saveDocument(toolId, fileId, nodeId, html)` | ✅ 地图侧**唯一**富文本编辑入口，由 `BaseMapTool.vue:92` 挂载 |
+| `components/common/InfoDatabase.vue` | 只读表格 + 详情抽屉（富文本 Tab 用 `v-html` **预览**，界面明写「编辑请回到画布」） | ✅ 仅只读 |
+| `components/tools/geo/panels/InfoPanel.vue` | 左侧信息栏（对象名称 / 自定义字段），**不含富文本** | ✅ 但非富文本组件 |
+
+**关键差距（决定了不整套复用）**：`MarkerDocPanel` 的样式面板由 `node.type` 驱动分支
+（`marker` / `polygon` / `rectangle`…），而白板元素 `type` 一律带 `wb-` 前缀
+（红线第 2 条），直接复用会导致**样式面板全空**。
+
+**接入方式**：白板侧直接复用**同一张 documents 表 + 同一套 documentStore API**
+（`getDocument(WB_TOOL_ID, fileId, annotationId)`），保证数据层与地图完全一致；
+在右侧面板提供「详情」按钮读取并 `v-html` 预览富文本。
+未整套复用 MarkerDocPanel 的 UI，理由已写入代码注释（WhiteboardTool.vue 第 226-232 行）。
+- 提交：（见下一次 commit）
 
 ## 四、红线（碰了立即停）
 
