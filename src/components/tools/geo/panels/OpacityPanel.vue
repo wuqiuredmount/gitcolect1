@@ -1,5 +1,5 @@
 <template>
-  <MapPanel title="🎨 图层透明度" :initialBottom="15">
+  <MapPanel title="🎨 图层透明度" :initialBottom="100">
     <div class="controls-body">
       <label>底图 <input type="range" min="0" max="1" step="0.1" :value="baseOpacity" @input="$emit('update:base', parseFloat($event.target.value))"></label>
       <label v-if="showAnno">注记 <input type="range" min="0" max="1" step="0.1" :value="annoOpacity" @input="$emit('update:anno', parseFloat($event.target.value))"></label>

@@ -6,7 +6,10 @@
       <!-- 头部 -->
       <div class="db-header">
         <div class="db-title">📊 信息数据库 - 全局数据总仓库</div>
-        <button class="close-btn" @click="$emit('close')">✕</button>
+        <div class="db-header-actions">
+          <button class="recycle-btn" @click="$emit('open-recycle')">🗑️ 回收站</button>
+          <button class="close-btn" @click="$emit('close')">✕</button>
+        </div>
       </div>
 
       <!-- 主体 -->
@@ -40,6 +43,7 @@
               <button class="export-btn" @click="handleExportWord">📄 导出Word</button>
             </div>
           </div>
+          <div class="table-scroll">
           <table class="data-table">
             <thead>
               <tr>
@@ -65,6 +69,7 @@
               </tr>
             </tbody>
           </table>
+          </div>
         </div>
 
         <!-- 3. 右侧：详情面板 -->
@@ -115,6 +120,7 @@
 </template>
 
 <script setup>
+// 测试技能
 import { ref, computed, watch } from 'vue';
 // 🚨 引入我们刚写的导出工具
 import { exportToExcel, exportToWord } from '../../groups/geo/utils/exporter'; 
@@ -125,7 +131,7 @@ const props = defineProps({
   allLayers: { type: Array, default: () => [] }
 });
 
-const emit = defineEmits(['close', 'update-layer', 'delete-layer']);
+const emit = defineEmits(['close', 'update-layer', 'delete-layer', 'open-recycle']);
 
 const activeFilter = ref('all');
 const filteredDataList = computed(() => {
@@ -153,7 +159,7 @@ const updateData = () => {
 };
 
 const handleDelete = (item) => {
-  if (confirm(`⚠️ 确定要删除数据（编码：${item.id}）吗？\n此操作将同步删除地图上的图形及对应的富文本文档，且不可逆！`)) {
+  if (confirm(`⚠️ 确定要删除数据（编码：${item.id}）吗？\n此操作将把图形及对应富文本文档移入回收站，可在回收站中恢复。`)) {
     emit('delete-layer', item);
     if (selectedItem.value?.id === item.id) selectedItem.value = null;
   }
@@ -182,6 +188,9 @@ watch(() => props.visible, (val) => {
 .database-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.6); z-index: 9999; display: flex; justify-content: center; align-items: center; }
 .database-modal { width: 90vw; height: 80vh; max-width: 1300px; background: #fff; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
 .db-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: #2c3e50; color: white; }
+.db-header-actions { display: flex; align-items: center; gap: 10px; }
+.recycle-btn { background: #7c3aed; color: #fff; border: none; border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; transition: 0.2s; }
+.recycle-btn:hover { background: #9b5de5; }
 .db-title { font-size: 16px; font-weight: bold; }
 .close-btn { background: none; border: none; color: white; font-size: 20px; cursor: pointer; }
 
@@ -189,7 +198,7 @@ watch(() => props.visible, (val) => {
 .db-body { display: flex; flex: 1; overflow: hidden; }
 
 /* 左侧目录 */
-.db-sidebar { width: 220px; border-right: 1px solid #eee; background: #f8f9fa; display: flex; flex-direction: column; padding: 10px 0; }
+.db-sidebar { width: 220px; border-right: 1px solid #eee; background: #f8f9fa; display: flex; flex-direction: column; padding: 10px 0; overflow-y: auto; }
 .sidebar-title { padding: 0 15px 10px; font-size: 12px; color: #888; font-weight: bold; }
 .tree-node { padding: 8px 15px; cursor: pointer; font-size: 13px; display: flex; justify-content: space-between; }
 .tree-node:hover { background: #e9ecef; }
@@ -203,6 +212,8 @@ watch(() => props.visible, (val) => {
 .export-btn { padding: 4px 12px; font-size: 12px; cursor: pointer; background: #fff; border: 1px solid #1890ff; color: #1890ff; border-radius: 4px; transition: 0.2s; }
 .export-btn:hover { background: #e6f7ff; }
 .export-btn:active { background: #bae0ff; }
+/* 🚨 新增：表格滚动容器，避免数据多时被裁切 */
+.table-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .data-table th { background: #f8f9fa; padding: 10px; text-align: left; border-bottom: 2px solid #eee; position: sticky; top: 0; }
 .data-table td { padding: 10px; border-bottom: 1px solid #f0f0f0; }

@@ -292,7 +292,8 @@ const toggleFormatModal = () => {
 
 const closeFormatModal = () => { isFormatModalOpen.value = false; };
 
-const createNewFormat = () => {
+// 🚨 修复 TDZ：改为函数声明（会被提升），以便 loadFormats() 在下方定义前调用
+function createNewFormat() {
   const newFormat = { 
     id: Date.now().toString(), 
     name: '新格式', 
@@ -301,7 +302,7 @@ const createNewFormat = () => {
   };
   allFormats.value.push(newFormat);
   editingFormat.value = newFormat;
-};
+}
 
 const saveFormat = () => {
   if (!editingFormat.value) return;

@@ -47,6 +47,7 @@
 
         <div class="window-controls">
           <!-- 已经删除了顶栏的“文件库存”按钮，避免和启动页重复 -->
+          <button class="inventory-btn" @click="isPendingOpen = true" title="待处理未放置信息库"> 📥 待处理未放置信息库</button>
           <button class="inventory-btn" @click="isDatabaseOpen = true" title="信息数据库"> 📊 信息数据库</button>
           <button class="settings-btn" @click="isSettingsOpen = true" title="设置"> ⚙️ 设置</button>
           <button></button><button></button><button></button>
@@ -70,8 +71,8 @@
           <!-- 🚨 保存按钮已移动到这里 -->
           <button 
             class="tool-save-btn" 
-            :disabled="currentTool?.id === 'geo-eagle-eye'"
-            :title="currentTool?.id === 'geo-eagle-eye' ? '鹰眼平台数据为实时自动保存，无需手动存档' : '保存当前工程到文件库存'"
+            :disabled="currentTool?.id === 'geo-eagle-eye' || currentTool?.id === 'geo-whiteboard'"
+            :title="currentTool?.id === 'geo-eagle-eye' ? '鹰眼平台数据为实时自动保存，无需手动存档' : (currentTool?.id === 'geo-whiteboard' ? '白板内容自动本地保存，无需手动存档' : '保存当前工程到文件库存')"
             @click="handleSaveCurrentProject"
           >
             💾 保存当前工程
@@ -116,6 +117,19 @@
             </div>
           </div>
           
+          <!-- 🖊️ 白板组启动界面 -->
+          <div v-else-if="currentGroupId === 'whiteboard'" class="card-group-launcher">
+            <h2 class="launcher-title">Excalidraw 白板 + 数据信息</h2>
+            <p class="launcher-subtitle">白板协作与数据信息整理空间</p>
+            <div class="launcher-actions">
+              <div class="launcher-card" @click="openTool(currentGroup.tools[0])">
+                <div class="launcher-icon">🖊️</div>
+                <div class="launcher-name">打开 Excalidraw 白板</div>
+                <div class="launcher-desc">自由绘制、标注与数据信息整理</div>
+              </div>
+            </div>
+          </div>
+
           <!-- 其他工具组默认欢迎界面 -->
           <div v-else class="default-welcome">
             <div class="welcome-icon">
@@ -281,6 +295,20 @@
       @close="isDatabaseOpen = false"
       @update-layer="handleDatabaseUpdate"
       @delete-layer="handleDatabaseDelete"
+      @open-recycle="isRecycleOpen = true"
+    />
+
+    <!-- 📥 待处理未放置信息库弹窗 -->
+    <PendingUnplacedModal
+      :visible="isPendingOpen"
+      @close="isPendingOpen = false"
+    />
+
+    <!-- 🗑️ 信息回收站弹窗 -->
+    <RecycleBinModal
+      :visible="isRecycleOpen"
+      @close="isRecycleOpen = false"
+      @changed="loadAllLayersFromDB"
     />
   </div>
 </template>
@@ -295,9 +323,12 @@ import ChinaProvinceMapTool from '../components/tools/geo/ChinaProvinceMapTool.v
 import CustomCanvasTool from '../components/tools/geo/CustomCanvasTool.vue';
 import ChinaStandardMapTool from '../components/tools/geo/ChinaStandardMapTool.vue';
 import EagleEyeMapTool from '../components/tools/geo/EagleEyeMapTool.vue';
+import WhiteboardTool from '../components/tools/whiteboard/WhiteboardTool.vue';
 
 import InfoDatabase from '../components/common/InfoDatabase.vue';
+import PendingUnplacedModal from '../components/common/PendingUnplacedModal.vue';
 import InventoryModal from '../components/common/InventoryModal.vue';
+import RecycleBinModal from '../components/common/RecycleBinModal.vue';
 
 import { globalToolSettings, ALL_WIDGETS, initToolSettings, globalDefaultStyles } from '../groups/geo/utils/toolSettings';
 import { MARKER_ICONS } from '../groups/geo/utils/markerIcons';
@@ -307,6 +338,7 @@ import { exportToExcel } from '../groups/geo/utils/exporter';
 
 import { getAllLayers, saveAllLayers } from '../groups/geo/utils/annotationStore';
 import { getDocument, deleteDocument } from '../groups/geo/utils/documentStore';
+import { moveToRecycleBin } from '../groups/geo/utils/recycleStore';
 import { ensureAllToolDBs } from '../groups/geo/utils/toolDB';
 import { seedAllToolMeta } from '../groups/geo/utils/toolDBInit';
 import { getNextSequence } from '../groups/geo/utils/systemStore';
@@ -320,7 +352,9 @@ const currentFileId = ref(''); // 🚨 核心：当前打开的文件编号
 const isAboutOpen = ref(false);
 const isSettingsOpen = ref(false);
 const isInventoryOpen = ref(false);
+const isRecycleOpen = ref(false);
 const isDatabaseOpen = ref(false);
+const isPendingOpen = ref(false);
 const currentFlatLayers = ref([]);
 
 const isToolDropdownOpen = ref(false);
@@ -391,6 +425,13 @@ const groups = ref([
       { id: 'geo-world-map', name: '3. 世界卫星地图信息分布空间', component: markRaw(WorldMapTool) },
       { id: 'geo-china-standard-map', name: '4. 中国标准地图信息分布空间', component: markRaw(ChinaStandardMapTool) },
       { id: 'geo-province-map', name: '5. 中国省级行政区信息分布空间', component: markRaw(ChinaProvinceMapTool) }
+    ]
+  },
+  {
+    id: 'whiteboard',
+    name: '🖊️ Excalidraw Whiteboard +数据信息',
+    tools: [
+      { id: 'geo-whiteboard', name: '1. Excalidraw 白板', component: markRaw(WhiteboardTool) }
     ]
   }
 ]);
@@ -560,6 +601,14 @@ const handleDatabaseDelete = async (item) => {
     if (!toolId) return;
 
     const layers = await getAllLayers(toolId);
+    const target = layers.find(l => l.id === item.id && l.fileId === item.fileId);
+
+    // 🚨 核心改造：删除前先把图形 + 富文本存入回收站（可恢复）
+    if (target) {
+      const docHtml = await getDocument(toolId, item.fileId, item.id) || target.docHtml || '';
+      await moveToRecycleBin(toolId, item.fileId, target, docHtml);
+    }
+
     const newLayers = layers.filter(l => !(l.id === item.id && l.fileId === item.fileId));
     await saveAllLayers(toolId, item.fileId, newLayers);
 
@@ -850,7 +899,7 @@ const exportWordOnly = (proj) => {
 .inventory-btn:hover { background: #f9fafb !important; border-color: #d1d5db !important; }
 
 /* ==================== 工具内部顶栏和保存按钮 ==================== */
-.active-tool-header { display: flex; align-items: center; justify-content: space-between; padding: 0 20px; height: 50px; background: #ffffff; border-bottom: 1px solid #e5e7eb; position: relative; }
+.active-tool-header { display: flex; align-items: center; justify-content: space-between; padding: 0 20px; height: 50px; background: #ffffff; border-bottom: 1px solid #e5e7eb; position: relative; z-index: 1100; }
 .active-tool-name { font-size: 15px; font-weight: 600; color: #1f2937; white-space: nowrap; margin-right: 15px; }
 .header-slot { flex: 1; display: flex; align-items: center; }
 .back-btn { background: #fff; border: 1px solid #e5e7eb; color: #4b5563; cursor: pointer; font-size: 13px; padding: 4px 12px; border-radius: 4px; transition: 0.2s; white-space: nowrap; margin-left: 15px; }
@@ -882,7 +931,7 @@ const exportWordOnly = (proj) => {
 .welcome-icon { margin-bottom: 16px; display: flex; align-items: center; justify-content: center; }
 .default-welcome p { font-size: 16px; }
 .active-tool { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #fff; }
-.tool-content { flex: 1; position: relative; overflow: hidden; }
+.tool-content { flex: 1; position: relative; overflow: hidden; isolation: isolate; z-index: 0; }
 
 /* ==================== 启动页卡片样式 ==================== */
 .card-group-launcher {

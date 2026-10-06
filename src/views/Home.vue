@@ -27,6 +27,11 @@
               <div class="group-name">自由信息分布标注与发布</div>
               <div class="group-desc">自定义地图与个人标注空间</div>
             </div>
+            <div class="group-card" @click="goToGisApp('whiteboard')">
+              <div class="group-icon">🖊️</div>
+              <div class="group-name">Excalidraw 白板 + 数据信息</div>
+              <div class="group-desc">白板协作与数据信息整理空间</div>
+            </div>
           </div>
         </div>
       </div>

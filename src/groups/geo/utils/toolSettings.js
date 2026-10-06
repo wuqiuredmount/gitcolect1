@@ -13,7 +13,9 @@ export const ALL_WIDGETS = [
   { key: 'opacityPanel', name: '图层透明度面板', default: true },
   // 新增两个全局通用工具
   { key: 'resetCenter', name: '回到底图中心点', default: true },
-  { key: 'zoomPercent', name: '缩放倍数 (20%-5000%)', default: true }
+  { key: 'zoomPercent', name: '缩放倍数 (20%-5000%)', default: true },
+  // 🚨 AI 批量导入面板（默认关闭，需在设置里按工具开启）
+  { key: 'aiImportPanel', name: 'AI批量导入', default: false }
 ];
 
 const STORAGE_KEY = 'liangjian_tool_widget_settings';

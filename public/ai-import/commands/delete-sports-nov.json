@@ -1,0 +1,6 @@
+{
+  "command": "delete",
+  "toolId": "geo-eagle-eye",
+  "target": { "group": "11月全国运动赛会" },
+  "reason": "赛事批次已补充 time 时间字段，需删除旧数据后重新导入才能显示时间"
+}

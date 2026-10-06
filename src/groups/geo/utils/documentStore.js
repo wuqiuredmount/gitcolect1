@@ -5,7 +5,8 @@ import {
   putToToolDB,
   deleteFromToolDB,
   getAllFromToolDB,
-  clearToolDB
+  clearToolDB,
+  openToolDB
 } from './toolDB';
 import { ensureToolMigrated } from './migrationManager';
 
@@ -51,4 +52,29 @@ export const getAllDocuments = async (toolId, fileId = null) => {
     return list.filter(doc => doc.fileId === fileId);
   }
   return list;
+};
+
+// 🚨 新增：批量写入文档（单事务），用于 AI 批量导入等场景
+// docs: [{ annotationId, docHtml }]
+export const saveDocumentsBatch = async (toolId, fileId, docs) => {
+  if (!toolId || !fileId) {
+    console.warn('[saveDocumentsBatch] 缺少 toolId 或 fileId');
+    return;
+  }
+  if (!Array.isArray(docs) || docs.length === 0) return;
+
+  await ensureToolMigrated(toolId);
+
+  const db = await openToolDB(toolId);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('documents', 'readwrite');
+    const store = tx.objectStore('documents');
+    docs.forEach(doc => {
+      if (!doc || !doc.annotationId) return;
+      const id = `${fileId}_${doc.annotationId}`;
+      store.put({ id, fileId, annotationId: doc.annotationId, docHtml: doc.docHtml || '' });
+    });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
 };

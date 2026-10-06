@@ -1,11 +1,11 @@
 <template>
   <div 
     class="map-panel" 
-    :class="{ collapsed: !isExpanded }"
+    :class="{ collapsed: !isExpanded, inline: inline }"
     ref="panelRef"
     @mousedown="startDrag"
   >
-    <div class="panel-header">
+    <div class="panel-header" @click="onHeaderClick">
       <span>{{ title }}</span>
       <span class="toggle-icon">{{ isExpanded ? '▼' : '▶' }}</span>
     </div>
@@ -22,15 +22,23 @@ const props = defineProps({
   title: { type: String, required: true },
   initialBottom: { type: Number, default: 15 },
   initialLeft: { type: Number, default: 60 },
-  // ✨ 新增：是否默认折叠
-  initialCollapsed: { type: Boolean, default: false }
+  // ✨ 是否默认折叠
+  initialCollapsed: { type: Boolean, default: false },
+  // ✨ 新增：顶栏内联模式（固定到顶部菜单栏，按钮+下拉，不可拖拽）
+  inline: { type: Boolean, default: false }
 });
 
-// ✨ 核心修改：如果传入了初始折叠，则默认是折叠状态
 const isExpanded = ref(!props.initialCollapsed);
 const panelRef = ref(null);
 
+// 内联模式：点击标题栏切换展开/折叠（不拖拽）
+const onHeaderClick = () => {
+  if (props.inline) isExpanded.value = !isExpanded.value;
+};
+
 const startDrag = (e) => {
+  // 内联模式不拖拽
+  if (props.inline) return;
   if (!e.target.closest('.panel-header')) return;
 
   const panel = panelRef.value;
@@ -86,7 +94,7 @@ const startDrag = (e) => {
   box-shadow: 0 2px 6px rgba(0,0,0,0.2);
   width: max-content;
   min-width: 80px;
-  max-width: 350px; /* 稍微放宽一点 */
+  max-width: 350px;
   user-select: none;
   overflow: hidden;
 }
@@ -108,4 +116,51 @@ const startDrag = (e) => {
 .panel-body { padding: 6px 10px; white-space: nowrap; }
 .collapsed .panel-body { display: none; }
 .collapsed .panel-header { border-bottom: none; border-radius: 5px; }
+
+/* ============ 顶栏内联模式 ============ */
+.map-panel.inline {
+  position: relative;
+  left: auto;
+  bottom: auto;
+  z-index: 3000;
+  flex: 0 0 auto;
+  margin-right: 8px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  box-shadow: none;
+  overflow: visible;
+  align-self: center;
+}
+.map-panel.inline .panel-header {
+  cursor: pointer;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: #f8f9fa;
+  border-bottom: none;
+  border-radius: 6px;
+  min-width: auto;
+}
+.map-panel.inline .panel-header:hover { background: #eef1f5; }
+.map-panel.inline:not(.collapsed) .panel-header {
+  border-bottom: 1px solid #eee;
+  border-radius: 6px 6px 0 0;
+}
+.map-panel.inline .panel-body {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 3000;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid #e5e7eb;
+  border-radius: 0 0 6px 6px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.15);
+  min-width: 220px;
+  max-width: 90vw;
+  max-height: 72vh;
+  overflow: auto;
+  white-space: normal;
+}
 </style>

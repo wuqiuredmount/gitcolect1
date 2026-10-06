@@ -67,17 +67,27 @@
           :panel-id="'layerList-' + config.toolId" 
           :layers="drawnLayers" 
           :groups="groups.map(g => g.name)" 
+          :hotspot-ids="hotspotIds"
+          :enable-hotspot="config.toolId === 'geo-eagle-eye'"
+          :display-ids="displayIds"
           @locate="flyToLayer"
           @add-group="handleAddGroup"
           @remove-group="handleRemoveGroup"
           @update-layer-group="handleUpdateLayerGroup"
+          @delete-layer="handleSoftDeleteLayer"
+          @filter-group="handleFilterGroup"
+          @refresh-hotspot="handleRefreshHotspot"
         />
       </Teleport>
 
-      <!-- 其他面板 -->
-      <LocatingPanel v-if="finalVisibleTools.locatingPanel" :panel-id="'locating-' + config.toolId" @search="handleSearch" />
+      <!-- 顶部固定工具栏：定位查找 / 信息栏（Teleport 到顶栏，inline 模式） -->
+      <Teleport to="#tool-header-slot">
+        <LocatingPanel v-if="finalVisibleTools.locatingPanel" inline :initialCollapsed="true" :panel-id="'locating-' + config.toolId" @search="handleSearch" />
+        <InfoPanel v-if="finalVisibleTools.infoPanel" inline ref="infoPanelRef" :tool-id="config.toolId" :layers="drawnLayers" @locate="flyToLayer" @update-layer="handleLayerUpdate" />
+      </Teleport>
+
+      <!-- 其他面板（保持浮层可拖拽） -->
       <OpacityPanel v-if="finalVisibleTools.opacityPanel" :panel-id="'opacity-' + config.toolId" :baseOpacity="baseOpacity" :annoOpacity="annoOpacity" :showAnno="config.baseLayer.annoUrl ? true : false" @update:base="updateBaseOpacity" @update:anno="updateAnnoOpacity" />
-      <InfoPanel v-if="finalVisibleTools.infoPanel" ref="infoPanelRef" :tool-id="config.toolId" :layers="drawnLayers" @locate="flyToLayer" @update-layer="handleLayerUpdate" />
       
             <MarkerDocPanel 
         v-if="finalVisibleTools.markerDocPanel && selectedNode" 
@@ -89,12 +99,23 @@
         @update:content="handleDocContentUpdate" 
         @update:style="val => updateNodeStyle(val)" 
       />
+
+      <!-- 🤖 AI 批量导入面板（顶部固定，inline 模式） -->
+      <Teleport to="#tool-header-slot">
+        <AiImportPanel
+          v-if="showAiImportPanel"
+          inline
+          :tool-id="config.toolId"
+          :file-id="props.config.toolId === 'geo-eagle-eye' ? 'legacy-file' : fileId"
+          @imported="handleAiImported"
+        />
+      </Teleport>
     </template>
   </div>
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, onActivated, onDeactivated, ref, computed } from 'vue';
+import { onMounted, onUnmounted, onActivated, onDeactivated, ref, computed, markRaw } from 'vue';
 
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -102,7 +123,10 @@ import 'leaflet-draw/dist/leaflet.draw.css';
 import 'leaflet-draw';
 
 import { zhCN_DrawLocal } from '../../../groups/geo/utils/drawConfig.js';
-import { saveAllLayers, getAllLayers } from '../../../groups/geo/utils/annotationStore.js';
+import { saveAllLayers, getAllLayers, appendLayers } from '../../../groups/geo/utils/annotationStore.js';
+import { moveToRecycleBin } from '../../../groups/geo/utils/recycleStore.js';
+import { getDocument, deleteDocument } from '../../../groups/geo/utils/documentStore.js';
+import { unregisterFingerprints } from '../../../groups/geo/utils/fingerprintStore.js';
 import { fileToBase64, parseProject } from '../../../groups/geo/utils/fileManager.js';
 
 import { getMergedToolConfig, getDefaultStyle } from '../../../groups/geo/utils/toolSettings.js';
@@ -118,6 +142,9 @@ import LayerListPanel from './panels/LayerListPanel.vue';
 import OpacityPanel from './panels/OpacityPanel.vue';
 import InfoPanel from './panels/InfoPanel.vue';
 import MarkerDocPanel from './panels/MarkerDocPanel.vue';
+import AiImportPanel from './panels/AiImportPanel.vue';
+import { importAiBatch } from '../../../groups/geo/utils/aiImporter.js';
+import { runChunked, sampleRandom, GROUP_DISPLAY_MAX, ROTATE_INTERVAL_MS, CHUNK_SIZE } from '../../../groups/geo/utils/layerScheduler.js';
 
 L.drawLocal = zhCN_DrawLocal;
 
@@ -138,6 +165,15 @@ const props = defineProps({
 
 const finalVisibleTools = computed(() => {
   return getMergedToolConfig(props.config.toolId, props.config.visibleTools);
+});
+
+// 🤖 AI 批量导入面板显示判定：
+// 工具自身 config.visibleTools 里显式指定时优先（如鹰眼设为 true）；
+// 否则回退到合并后的全局设置（默认 false）。
+const showAiImportPanel = computed(() => {
+  const raw = props.config.visibleTools?.aiImportPanel;
+  if (raw !== undefined) return raw;
+  return finalVisibleTools.value.aiImportPanel === true;
 });
 
 const mapContainer = ref(null);
@@ -169,6 +205,8 @@ let currentBaseImageHeight = 0;
 
 let defaultCenter = [39.0123, 117.3456];
 let defaultZoom = 15;
+// 🚨 数据加载完成标志：未完成前禁止自动保存，避免空数组覆盖 IndexedDB 历史数据
+let hasLoadedOnce = false;
 const zoomLevelPercent = ref(100);
 
 const selectedNode = ref(null);
@@ -178,6 +216,27 @@ const activeTool = ref(null);
 const drawnLayers = ref([]);
 const groups = ref([{ id: 1, name: '默认' }]);
 const isCustomImageLoaded = ref(false);
+
+// ==================== 热点信息（与收藏夹同为「叠加型」虚拟分组） ====================
+// 目的：鹰眼平台数据量大时（数百条），全量渲染会造成卡顿。
+// 策略：打开时只渲染「热点信息」中的图形（每个分组随机 2-3 个，总数不超过 49）。
+// 数据仍完整保留在 drawnLayers 与 IndexedDB 中，仅控制地图渲染数量。
+const HOTSPOT_KEY = 'geo_hotspot_layer_ids';
+const HOTSPOT_GROUP = '热点信息';
+const HOTSPOT_MAX = 49;
+const hotspotIds = ref([]);
+
+// ==================== 显示窗口 + 轮换（防卡顿核心） ====================
+// 任何视图最多只把 GROUP_DISPLAY_MAX 个图形挂到地图上，每 30 秒随机轮换。
+// 数据仍完整保留在 drawnLayers，仅控制「实际挂载到 Leaflet」的数量。
+const displayIds = ref([]);
+const currentView = ref('全部');
+const loadProgress = ref({ done: 0, total: 0, loading: false });
+let rotateTimer = null;
+
+// 图标缓存：同一套样式只创建一次 divIcon，避免万级标记重复解析 SVG
+const markerIconCache = new Map();
+
 // 🚨 跟踪 KeepAlive 激活状态，控制 Teleport 内容是否挂载
 const isActive = ref(true);
 const AMAP_KEY = '69d86725ca981d56159af949ce2a68ec';
@@ -217,6 +276,11 @@ const extractCoordsFromLayer = (item) => {
 // 🚨 保存前提取坐标 + NaN 校验 + coords 回退
 const forceAutoSave = async () => {
   if (!props.config.toolId) return;
+  // 🚨 核心防护：数据尚未从 IndexedDB 加载完成时禁止保存，避免空数组覆盖历史数据
+  if (!hasLoadedOnce) {
+    console.warn('[forceAutoSave] 数据尚未加载完成，跳过本次保存以避免覆盖历史数据');
+    return;
+  }
   try {
     const layersToSave = drawnLayers.value.map(item => {
       let coords = extractCoordsFromLayer(item);
@@ -256,17 +320,39 @@ const getMarkerIcon = (style) => {
   const size = style.iconSize || 32;
   const opacity = style.fillOpacity !== undefined ? style.fillOpacity : 1;
   const iconType = style.iconType !== undefined ? style.iconType : 0;
-  
+
+  // 🚨 图标缓存：样式相同直接复用，避免每个标记都新建 divIcon 并解析 SVG
+  const cacheKey = color + '|' + size + '|' + opacity + '|' + iconType;
+  if (markerIconCache.has(cacheKey)) return markerIconCache.get(cacheKey);
+
   const iconDef = MARKER_ICONS.find(i => i.id === iconType) || MARKER_ICONS[0];
   const svgHtml = iconDef.svg.replace(/#COLOR#/g, color);
 
-  return L.divIcon({
+  const icon = L.divIcon({
     className: 'custom-marker-icon',
     html: `<div style="width: ${size}px; height: ${size}px; opacity: ${opacity}; display: flex; align-items: center; justify-content: center;">${svgHtml}</div>`,
     iconSize: [size, size],
-    iconAnchor: [size / 2, size], 
+    iconAnchor: [size / 2, size],
     popupAnchor: [0, -size]
   });
+  markerIconCache.set(cacheKey, icon);
+  return icon;
+};
+
+// 🚨 创建单个 Leaflet 图层实例（不挂载，交给显示窗口决定）
+const createLayerInstance = (item) => {
+  try {
+    if (item.type === 'polygon' || item.type === 'circle' || item.type === 'ellipse') return L.polygon(item.coords, item.style);
+    if (item.type === 'polyline') return L.polyline(item.coords, item.style);
+    if (item.type === 'rectangle') return L.rectangle(item.coords, item.style);
+    if (item.type === 'marker') {
+      const markerStyle = { ...getDefaultStyle('marker'), ...(item.style || {}) };
+      return L.marker(item.coords[0], { icon: getMarkerIcon(markerStyle) });
+    }
+  } catch (e) {
+    console.warn('[createLayerInstance] 创建失败:', item && item.id, e);
+  }
+  return null;
 };
 
 const generateCirclePoints = (center, radiusInMeters, numPoints = 64) => {
@@ -409,6 +495,7 @@ onUnmounted(() => {
   forceAutoSave();
   if (map) map.remove();
   if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
+  if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }
   document.removeEventListener('fullscreenchange', handleResize);
 });
 
@@ -421,6 +508,46 @@ const toggleFullscreen = () => {
 const hideContextMenu = () => {
   contextMenuVisible.value = false;
   contextMenuLayerData.value = null;
+};
+
+// 🚨 软删除图层（供图形列表的「编辑分组」窗口调用）
+//    与右键菜单删除不同：此路径把图形 + 富文本一起移入回收站，可恢复
+const handleSoftDeleteLayer = async (layer) => {
+  if (!layer || !layer.id) return;
+  const toolId = props.config.toolId;
+  const fileId = layer.fileId || (toolId === 'geo-eagle-eye' ? 'legacy-file' : (props.fileId || 'legacy-file'));
+
+  try {
+    // 1. 移入回收站（含富文本）
+    let docHtml = '';
+    try {
+      docHtml = await getDocument(toolId, fileId, layer.id) || '';
+    } catch (e) { /* 文档缺失不阻断 */ }
+    await moveToRecycleBin(toolId, fileId, layer, docHtml);
+
+    // 2. 从内存与地图移除
+    if (layer.layerRef && editableLayers) {
+      editableLayers.removeLayer(layer.layerRef);
+    }
+    drawnLayers.value = drawnLayers.value.filter(item => item.id !== layer.id);
+    if (selectedNode.value && selectedNode.value.id === layer.id) {
+      selectedNode.value = null;
+    }
+
+    // 3. 从数据库移除（saveAllLayers 会自动同步注销指纹）
+    const allData = await getAllLayers(toolId);
+    const remain = allData.filter(l => !(l.id === layer.id && (l.fileId || 'legacy-file') === fileId));
+    await saveAllLayers(toolId, fileId, remain.filter(l => l.fileId === fileId));
+
+    // 4. 删除富文本文档 + 注销指纹
+    try { await deleteDocument(toolId, fileId, layer.id); } catch (e) { /* 忽略 */ }
+    try { await unregisterFingerprints(toolId, [layer]); } catch (e) { /* 忽略 */ }
+
+    console.log(`[软删除] 已移入回收站：${layer.title || layer.id}`);
+  } catch (e) {
+    console.error('[handleSoftDeleteLayer] 删除失败:', e);
+    alert('删除失败：' + (e.message || e));
+  }
 };
 
 const handleDeleteLayer = () => {
@@ -450,66 +577,77 @@ const loadHistoricalLayers = async () => {
   // 🚨 核心修复：鹰眼平台作为公共平台，不进行文件隔离，加载所有历史数据
   const queryFileId = props.config.toolId === 'geo-eagle-eye' ? null : props.fileId;
   const records = await getAllLayers(props.config.toolId, queryFileId); 
+  // 🚨 读取成功后才允许后续保存（即使为空也允许，因为用户确实是空场景）
+  hasLoadedOnce = true;
   if (!records || records.length === 0) return;
   
   const isValidPoint = (pt) => Array.isArray(pt) && pt.length >= 2 && Number.isFinite(pt[0]) && Number.isFinite(pt[1]);
 
-  records.forEach(item => {
-    if (!item.coords || !Array.isArray(item.coords) || item.coords.length === 0) {
-      console.warn('跳过无效图层(缺少坐标):', item.id);
-      return;
-    }
-    if (!item.coords.every(isValidPoint)) {
-      console.warn('跳过无效图层(坐标含NaN):', item.id, JSON.stringify(item.coords).slice(0, 200));
-      return;
-    }
-
-    let layer = null;
-    try {
-      if (item.type === 'polygon' || item.type === 'circle' || item.type === 'ellipse') layer = L.polygon(item.coords, item.style).addTo(map);
-      else if (item.type === 'polyline') layer = L.polyline(item.coords, item.style).addTo(map);
-      else if (item.type === 'rectangle') layer = L.rectangle(item.coords, item.style).addTo(map);
-      else if (item.type === 'marker') {
-        const markerStyle = { ...getDefaultStyle('marker'), ...(item.style || {}) };
-        layer = L.marker(item.coords[0], { icon: getMarkerIcon(markerStyle) }).addTo(map);
-      }
-    } catch (e) { console.warn('加载历史图层失败', e); }
-
-    if (layer) {
-      editableLayers.addLayer(layer);
-      layer.uniqueId = item.id;
-
-      let safeLat = item.lat, safeLng = item.lng;
-      if (item.coords[0]) {
-        safeLat = item.coords[0][0];
-        safeLng = item.coords[0][1];
-      }
-
-      const layerData = { ...item, lat: safeLat, lng: safeLng, layerRef: layer };
-      drawnLayers.value.push(layerData);
-
-      if (item.group && !groups.value.find(g => g.name === item.group)) {
-        groups.value.push({ id: 0, name: item.group });
-      }
-
-      layer.on('click', () => {
-        const currentData = drawnLayers.value.find(d => d.id === layer.uniqueId);
-        if (currentData) {
-          selectedNode.value = { ...currentData };
-          if (infoPanelRef.value) infoPanelRef.value.selectLayer(currentData);
-        }
-      });
-
-      layer.on('contextmenu', (e) => {
-        L.DomEvent.stopPropagation(e);
-        L.DomEvent.preventDefault(e);
-        contextMenuX.value = e.originalEvent.clientX;
-        contextMenuY.value = e.originalEvent.clientY;
-        contextMenuLayerData.value = layerData;
-        contextMenuVisible.value = true;
-      });
-    }
+  // 先筛出有效项（无坐标 / NaN 直接排除）
+  const valid = records.filter(item => {
+    if (!item.coords || !Array.isArray(item.coords) || item.coords.length === 0) return false;
+    if (!item.coords.every(isValidPoint)) return false;
+    return true;
   });
+
+  loadProgress.value = { done: 0, total: valid.length, loading: valid.length > 0 };
+
+  // 🚨 分块创建：每 9 个一组，组间让出主线程，避免阻塞 UI
+  //    只创建对象，不挂载到地图；挂载由「显示窗口」统一决定。
+  const created = [];
+  await runChunked(valid, (item) => {
+    const layer = createLayerInstance(item);
+    if (!layer) return;
+    layer.uniqueId = item.id;
+
+    let safeLat = item.lat, safeLng = item.lng;
+    if (item.coords[0]) {
+      safeLat = item.coords[0][0];
+      safeLng = item.coords[0][1];
+    }
+
+    // 🚨 markRaw：Leaflet 对象不需要响应式，避免 Vue 深度代理带来的巨量开销
+    const layerData = { ...item, lat: safeLat, lng: safeLng, layerRef: markRaw(layer) };
+    created.push(layerData);
+
+    if (item.group && !groups.value.find(g => g.name === item.group)) {
+      groups.value.push({ id: 0, name: item.group });
+    }
+
+    layer.on('click', () => {
+      const currentData = drawnLayers.value.find(d => d.id === layer.uniqueId);
+      if (currentData) {
+        selectedNode.value = { ...currentData };
+        if (infoPanelRef.value) infoPanelRef.value.selectLayer(currentData);
+      }
+    });
+
+    layer.on('contextmenu', (e) => {
+      L.DomEvent.stopPropagation(e);
+      L.DomEvent.preventDefault(e);
+      contextMenuX.value = e.originalEvent.clientX;
+      contextMenuY.value = e.originalEvent.clientY;
+      contextMenuLayerData.value = layerData;
+      contextMenuVisible.value = true;
+    });
+  }, {
+    chunkSize: CHUNK_SIZE,
+    onProgress: (done, total) => { loadProgress.value = { done, total, loading: done < total }; }
+  });
+
+  drawnLayers.value = drawnLayers.value.concat(created);
+  loadProgress.value = { done: valid.length, total: valid.length, loading: false };
+
+  // 🚨 应用显示窗口：鹰眼默认看热点，其它工具默认看全部
+  if (props.config.toolId === 'geo-eagle-eye') {
+    loadHotspotIds();
+    if (hotspotIds.value.length === 0 && drawnLayers.value.length > 0) {
+      saveHotspotIds(buildHotspotIds());
+    }
+    applyDisplayForView(HOTSPOT_GROUP);
+  } else {
+    applyDisplayForView('全部');
+  }
 };
 
 const bindMapEvents = () => {
@@ -646,6 +784,112 @@ const handleUpdateLayerGroup = ({ id, group }) => {
     drawnLayers.value[index].group = group;
     forceAutoSave();
   }
+};
+
+// ==================== 热点信息：生成与应用 ====================
+
+const loadHotspotIds = () => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(HOTSPOT_KEY) || '[]');
+    hotspotIds.value = Array.isArray(raw) ? raw : [];
+  } catch (e) {
+    hotspotIds.value = [];
+  }
+};
+
+const saveHotspotIds = (ids) => {
+  hotspotIds.value = Array.isArray(ids) ? ids : [];
+  try { localStorage.setItem(HOTSPOT_KEY, JSON.stringify(hotspotIds.value)); } catch (e) { /* 忽略配额错误 */ }
+};
+
+// 生成热点：遍历每个分组，随机抽取 2-3 个，累计不超过 HOTSPOT_MAX
+const buildHotspotIds = () => {
+  const byGroup = {};
+  drawnLayers.value.forEach(item => {
+    if (!item || !item.id) return;
+    const g = item.group || '默认';
+    (byGroup[g] = byGroup[g] || []).push(item.id);
+  });
+
+  const picked = [];
+  const seen = new Set();
+  Object.keys(byGroup).forEach(g => {
+    if (picked.length >= HOTSPOT_MAX) return;
+    const pool = byGroup[g].slice();
+    const want = Math.min(pool.length, 2 + Math.floor(Math.random() * 2));
+    for (let i = 0; i < want && picked.length < HOTSPOT_MAX; i++) {
+      const idx = Math.floor(Math.random() * pool.length);
+      const id = pool.splice(idx, 1)[0];
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        picked.push(id);
+      }
+    }
+  });
+  return picked;
+};
+
+// ==================== 显示窗口：上限 60 + 30 秒轮换 ====================
+
+// 计算某视图的显示集合（随机采样，上限 GROUP_DISPLAY_MAX）
+const computeDisplaySet = (view) => {
+  let pool;
+  if (view === HOTSPOT_GROUP) {
+    pool = hotspotIds.value.slice();
+  } else if (!view || view === '全部') {
+    pool = drawnLayers.value.map(i => i.id);
+  } else {
+    pool = drawnLayers.value.filter(i => (i.group || '默认') === view).map(i => i.id);
+  }
+  return sampleRandom(pool, GROUP_DISPLAY_MAX);
+};
+
+// 应用显示集合：始终通过 editableLayers 容器增删
+// 注意：绝不能直接 map.addLayer/removeLayer，否则图层脱离容器会导致投影错乱、图形跑位
+const applyDisplaySet = (ids) => {
+  if (!editableLayers) return;
+  const idSet = new Set(ids);
+  drawnLayers.value.forEach(item => {
+    const ref = item.layerRef;
+    if (!ref) return;
+    const shouldShow = idSet.has(item.id);
+    const inGroup = editableLayers.hasLayer(ref);
+    if (shouldShow && !inGroup) editableLayers.addLayer(ref);
+    else if (!shouldShow && inGroup) editableLayers.removeLayer(ref);
+  });
+  displayIds.value = ids;
+};
+
+// 轮换计时器：每 30 秒重新随机采样
+const restartRotation = (view) => {
+  if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }
+  // 热点视图由「刷新热点」手动控制，不自动轮换
+  if (view === HOTSPOT_GROUP) return;
+  rotateTimer = setInterval(() => {
+    const ids = computeDisplaySet(currentView.value);
+    applyDisplaySet(ids);
+  }, ROTATE_INTERVAL_MS);
+};
+
+// 切换视图并应用显示窗口
+const applyDisplayForView = (view) => {
+  currentView.value = view;
+  const ids = computeDisplaySet(view);
+  applyDisplaySet(ids);
+  restartRotation(view);
+  return ids;
+};
+
+// 手动刷新热点（供图形列表的「刷新热点」按钮调用）
+const handleRefreshHotspot = () => {
+  saveHotspotIds(buildHotspotIds());
+  applyDisplayForView(HOTSPOT_GROUP);
+};
+
+// 🚨 分组切换入口：改为走显示窗口（上限 60 + 轮换）
+const handleFilterGroup = (groupName) => {
+  if (!editableLayers) return;
+  applyDisplayForView(groupName || '全部');
 };
 
 // 🚨 Phase 2b：新分组编号格式 CM-G.00001
@@ -1222,11 +1466,35 @@ const saveProjectToInventoryAction = async (projectName) => {
   return await saveProjectToInventory(data);
 };
 
+// 🤖 AI 批量导入完成后的处理：刷新地图 + 补充分组 + 通知
+const handleAiImported = async (result) => {
+  if (!result || !result.imported) return;
+  // 把新分组补进 groups，让图形列表下拉可见
+  if (result.group && !groups.value.find(g => g.name === result.group)) {
+    groups.value.push({ id: 0, name: result.group });
+  }
+  await refreshDataFromDB();
+};
+
+// 🤖 对外暴露的导入入口（供外部 AI 通道直接调用）
+const importAiBatchAction = async (batchData, onProgress) => {
+  const safeFileId = props.config.toolId === 'geo-eagle-eye' ? 'legacy-file' : (props.fileId || 'legacy-file');
+  const res = await importAiBatch({
+    toolId: props.config.toolId,
+    fileId: safeFileId,
+    batchData,
+    onProgress
+  });
+  await handleAiImported(res);
+  return res;
+};
+
 defineExpose({
   getProjectData,
   loadProjectData,
   refreshDataFromDB,
-  saveProjectToInventory: saveProjectToInventoryAction
+  saveProjectToInventory: saveProjectToInventoryAction,
+  importAiBatch: importAiBatchAction
 });
 </script>
 
@@ -1243,18 +1511,23 @@ defineExpose({
   position: absolute;
   bottom: 15px;
   left: 15px;
-  z-index: 1050;
+  z-index: 1060;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  align-items: center;   /* 🚨 关键：禁止子元素被拉伸到容器宽度 */
+  gap: 6px;
+  width: fit-content;
   background: rgba(255, 255, 255, 0.95);
-  padding: 10px;
-  border-radius: 5px;
+  padding: 6px;
+  border-radius: 6px;
   box-shadow: 0 2px 6px rgba(0,0,0,0.2);
 }
 .reset-center-btn {
+  flex: 0 0 auto;
+  align-self: center;
   width: 30px;
   height: 30px;
+  padding: 0;
   border: none;
   background: #f0f0f0;
   border-radius: 4px;
@@ -1271,17 +1544,24 @@ defineExpose({
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  font-size: 11px;
+  align-self: center;
+  gap: 3px;
+  font-size: 10px;
   color: #333;
 }
+/* 🚨 横向滑块，宽度收窄以匹配透明度面板 */
 .zoom-percent-slider {
-  width: 100px;
+  width: 72px;
+  height: 12px;
   cursor: pointer;
+  margin: 0;
 }
 .zoom-percent-label {
   font-weight: bold;
   color: #1890ff;
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .upload-container { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 999; background: #1a1a1a; display: flex; justify-content: center; align-items: center; }

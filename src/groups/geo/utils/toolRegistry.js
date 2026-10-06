@@ -8,7 +8,8 @@ export const TOOL_PREFIX = {
   'geo-world-map': 'WM',
   'geo-china-standard-map': 'CS',
   'geo-province-map': 'PM',
-  'geo-eagle-eye': 'EH'
+  'geo-eagle-eye': 'EH',
+  'geo-whiteboard': 'WB'
 };
 
 // 工具元数据
@@ -18,7 +19,8 @@ export const TOOL_META = {
   'geo-world-map':          { name: '世界卫星地图',       dbName: 'LiangJian_Tool_WM', prefix: 'WM' },
   'geo-china-standard-map': { name: '中国标准地图',       dbName: 'LiangJian_Tool_CS', prefix: 'CS' },
   'geo-province-map':       { name: '中国省级行政区',     dbName: 'LiangJian_Tool_PM', prefix: 'PM' },
-  'geo-eagle-eye':          { name: '鹰眼公共平台',       dbName: 'LiangJian_Tool_EH', prefix: 'EH' }
+  'geo-eagle-eye':          { name: '鹰眼公共平台',       dbName: 'LiangJian_Tool_EH', prefix: 'EH' },
+  'geo-whiteboard':         { name: 'Excalidraw 白板',    dbName: 'LiangJian_Tool_WB', prefix: 'WB' }
 };
 
 // 按库存 Tab 顺序排列（后续 UI 依赖此顺序）
@@ -28,11 +30,14 @@ export const TOOL_ORDER = [
   'geo-world-map',
   'geo-china-standard-map',
   'geo-province-map',
-  'geo-eagle-eye'
+  'geo-eagle-eye',
+  'geo-whiteboard'
 ];
 
 // 每个工具库的版本号（每次表结构变更 +1）
-export const TOOL_DB_VERSION = 1;
+// v2：新增 recyclebin 回收站表
+// v3：新增 fingerprints 指纹索引表（支撑千万级幂等去重）
+export const TOOL_DB_VERSION = 3;
 
 // 每个工具库的表结构（5 张表）
 export const TOOL_STORES = [
@@ -42,7 +47,18 @@ export const TOOL_STORES = [
     indexes: [{ name: 'createdAt', keyPath: 'createdAt' }] },
   { name: 'meta',        keyPath: 'key' },
   { name: 'assets',      keyPath: 'assetId',
-    indexes: [{ name: 'createdAt', keyPath: 'createdAt' }] }
+    indexes: [{ name: 'createdAt', keyPath: 'createdAt' }] },
+  // 🚨 v2 新增：回收站（存放被删除的图形及其富文本，支持恢复）
+  { name: 'recyclebin',  keyPath: 'id',
+    indexes: [{ name: 'deletedAt', keyPath: 'deletedAt' }] },
+  // 🚨 v3 新增：指纹索引表。以 fingerprint 为主键，实现 O(log n) 幂等去重，
+  //           避免千万级数据全量加载进内存。
+  { name: 'fingerprints', keyPath: 'fp',
+    indexes: [
+      { name: 'annotationId', keyPath: 'annotationId' },
+      { name: 'fileId', keyPath: 'fileId' },
+      { name: 'createdAt', keyPath: 'createdAt' }
+    ] }
 ];
 
 // 生成带前缀的图形编号： CM.00001

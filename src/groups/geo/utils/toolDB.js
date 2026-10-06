@@ -23,7 +23,7 @@ export const openToolDB = (toolId) => {
       const db = event.target.result;
       const oldVersion = event.oldVersion;
 
-      // 首次创建：建 5 张表
+      // 首次创建：建全部表（含 v2 的 recyclebin）
       if (oldVersion === 0) {
         TOOL_STORES.forEach(storeConfig => {
           const store = db.createObjectStore(storeConfig.name, { keyPath: storeConfig.keyPath });
@@ -35,7 +35,24 @@ export const openToolDB = (toolId) => {
         });
         console.log(`[toolDB] 首次创建库: ${meta.dbName}`);
       }
-      // 未来版本升级时，在此处按 oldVersion 分支添加迁移逻辑
+      // 🚨 v1 → v2：补建 recyclebin 表（老库升级）
+      if (oldVersion > 0 && oldVersion < 2) {
+        if (!db.objectStoreNames.contains('recyclebin')) {
+          const recycle = db.createObjectStore('recyclebin', { keyPath: 'id' });
+          recycle.createIndex('deletedAt', 'deletedAt');
+          console.log(`[toolDB] ${meta.dbName} 升级到 v2：已补建 recyclebin 表`);
+        }
+      }
+      // 🚨 v2 → v3：补建 fingerprints 指纹索引表（支撑千万级幂等去重）
+      if (oldVersion > 0 && oldVersion < 3) {
+        if (!db.objectStoreNames.contains('fingerprints')) {
+          const fp = db.createObjectStore('fingerprints', { keyPath: 'fp' });
+          fp.createIndex('annotationId', 'annotationId');
+          fp.createIndex('fileId', 'fileId');
+          fp.createIndex('createdAt', 'createdAt');
+          console.log(`[toolDB] ${meta.dbName} 升级到 v3：已补建 fingerprints 表`);
+        }
+      }
     };
 
     request.onsuccess = (event) => {
@@ -104,6 +121,66 @@ export const clearToolDB = async (toolId, storeName) => {
     const request = store.clear();
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
+  });
+};
+
+// 🚨 新增：批量按键存在性查询（用于幂等去重，避免全量加载）
+// 返回已存在的 key 数组。单事务内完成，千万级数据下也只需 O(k log n)。
+export const filterExistingKeys = async (toolId, storeName, keys) => {
+  const list = Array.isArray(keys) ? keys.filter(k => k !== null && k !== undefined) : [];
+  if (list.length === 0) return [];
+
+  const db = await openToolDB(toolId);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readonly');
+    const store = tx.objectStore(storeName);
+    const existing = [];
+    let pending = list.length;
+
+    list.forEach(key => {
+      const req = store.getKey(key);
+      req.onsuccess = () => {
+        if (req.result !== undefined) existing.push(key);
+        if (--pending === 0) resolve(existing);
+      };
+      req.onerror = () => {
+        if (--pending === 0) resolve(existing);
+      };
+    });
+
+    tx.onerror = () => reject(tx.error);
+  });
+};
+
+// 🚨 新增：批量写入（单事务），用于指纹登记
+// records: [{ ... }]，每条须含其 keyPath 对应字段
+export const putManyToToolDB = async (toolId, storeName, records) => {
+  const list = Array.isArray(records) ? records.filter(Boolean) : [];
+  if (list.length === 0) return;
+
+  const db = await openToolDB(toolId);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    list.forEach(rec => store.put(rec));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+};
+
+// 🚨 新增：按主键批量删除（单事务），用于删除图形时同步清理指纹
+// keys: 主键数组
+export const deleteManyFromToolDB = async (toolId, storeName, keys) => {
+  const list = Array.isArray(keys) ? keys.filter(k => k !== null && k !== undefined) : [];
+  if (list.length === 0) return;
+
+  const db = await openToolDB(toolId);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    list.forEach(key => store.delete(key));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
 };
 
