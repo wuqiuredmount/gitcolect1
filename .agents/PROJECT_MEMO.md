@@ -4,7 +4,7 @@
 > 本文件是**跨会话的唯一权威记忆**。新会话开始时，AI 必须先读它。
 > **每轮对话结束前，AI 必须更新本文件的「数据现状」与「待办」两节。**
 
-最后更新：2026-10-06（参考资料整理：抽离 Excalidraw 官方集成文档，删除 14.5MB 仓库导出，未改任何业务代码）
+最后更新：2026-10-06（白板 6 项施工任务全部完成：全登记 / 字体自托管 / 懒加载 / R4读时归一化 / 主组件 / 富文本核实；build 通过，4 次 commit）
 
 ---
 
@@ -220,6 +220,26 @@
    - 判断是否在容器内用 `editableLayers.hasLayer(ref)`，不要用 `map.hasLayer(ref)`。
    - 已修：`handleFilterGroup`（BaseMapTool.vue:733）。
 
+10. **Excalidraw 0.18.1 没有 scrollConstraints**（2026-10-06 实测）
+    网上大量资料提 `initialData.appState.scrollConstraints`，但该 API 在 0.18.1 中
+    **类型声明与构建产物均为 0 处**。可用入口只有 `Props.viewModeEnabled`（会连画图一起禁掉）、
+    `Props.onScrollChange` / `api.onScrollChange`（均只读）。
+    且 Excalidraw 把滚动钳制在「内容包围盒」内，`scrollX/scrollY` 无法被程序固定为常数。
+    → 本版本改用**读时归一化**：直接用 `element.x/y`（世界坐标）换算 lat/lng。
+      平移只改 `appState.scrollX/scrollY`，不改 `element.x/y`，故坐标与指纹天然稳定。
+    → 结论已写死进 `elementSync.js` 注释（toWorldPoint / worldToScreen）。
+
+11. **用 insert_line 在 .vue 文件插入代码极易错位**（2026-10-06）
+    行号会随着前一次插入漂移，且若不巧落在 `computed(...)` / `</template>` 中间，
+    会截断语句导致 `Unexpected token` 或 `Element is missing end tag`（本次连踩 3 次）。
+    → 大文件分块写：优先用 `old_text/new_text` 锚定**唯一文本**做替换，
+      或先 `Get-Content | Select-Object` 核实行号与上下文再插入；
+      写完后务必 `Select-String '</?template|</?script|</?style'` 校验 SFC 结构完整。
+
+12. **Node ESM 跑源码验证脚本需补 .js 后缀**（2026-10-06）
+    项目源码按 Vite 习惯省略 import 后缀，`node xxx.mjs` 直跑会 ERR_MODULE_NOT_FOUND。
+    → 临时写一个 `register('./.js-resolver.mjs')` 解析钩子补后缀，验证完即删，不留在仓库。
+
 ---
 
 ## 六、待办
@@ -267,7 +287,16 @@
 - [x] 新建 `.clinerules/00-index.md`：Cline 常驻薄索引，触发式加载 + 硬约定（2026-10-06 完成）
 - [x] skill 去重：抽取 `.agents/references/common-verification.md`，import 与 recycle 两个 skill 移除重复验证命令与横切约定（2026-10-06 完成）
 - [ ] 可选：把 `代码修改返还完整代码` skill 与 `.clinerules` 的重复表述进一步合并
-- [ ] 第三产品（Excalidraw Whiteboard +数据信息）正式落地：独立路由 + 独立容器 + 完整功能，需另起专门任务，勿混入现有地图工具组
+- [x] 第三产品（Excalidraw Whiteboard +数据信息）**6 项施工任务全部完成**（2026-10-06，见
+      `.agents/references/whiteboard-autonomous-plan.md` 勾选状态，共 4 次 commit）：
+      - [x] 任务1 全登记：无名元素用 `element.id` 兜底参与指纹（17/17 断言通过）
+      - [x] 任务2 字体自托管：`public/excalidraw-fonts/`（9 族 234 文件 12.5MB，含中文 Xiaolai）
+      - [x] 任务3 懒加载：主包 739KB 无 React；excalidraw chunk 4805KB 点开才加载
+      - [x] 任务4 R4：实测 0.18.1 **无 scrollConstraints**，改用读时归一化（8/8 断言通过）
+      - [x] 任务5 `WhiteboardTool.vue` 主组件落地
+      - [x] 任务6 富文本组件核实：确认为 `MarkerDocPanel.vue`（BaseMapTool.vue:92 挂载）
+- [ ] 白板端到端实测（需在浏览器/Electron 手动验证，AI 无法直接操作 IndexedDB）：
+      画未命名矩形 → 信息数据库可见 → 点开有富文本 → 删除进回收站可恢复 → 反复刷新不重复
 
 ---
 
