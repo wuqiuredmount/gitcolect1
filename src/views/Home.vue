@@ -15,7 +15,7 @@
           <div class="title">良件（天津）数据信息技术有限公司</div>
           <div class="slogan">空间信息共享与集成 · 让数据在互动中创造价值</div>
           
-          <!-- 两个工具组的独立入口 -->
+          <!-- 三个产品入口 -->
           <div class="group-entry-container">
             <div class="group-card" @click="goToGisApp('geo')">
               <div class="group-icon">🗺️</div>

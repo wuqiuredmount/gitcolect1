@@ -9,7 +9,8 @@ export const TOOL_PREFIX = {
   'geo-china-standard-map': 'CS',
   'geo-province-map': 'PM',
   'geo-eagle-eye': 'EH',
-  'geo-whiteboard': 'WB'
+  // 🚨 第三产品（Excalidraw 白板，地图补充视图）前缀码
+  'wb-whiteboard': 'WB'
 };
 
 // 工具元数据
@@ -20,7 +21,7 @@ export const TOOL_META = {
   'geo-china-standard-map': { name: '中国标准地图',       dbName: 'LiangJian_Tool_CS', prefix: 'CS' },
   'geo-province-map':       { name: '中国省级行政区',     dbName: 'LiangJian_Tool_PM', prefix: 'PM' },
   'geo-eagle-eye':          { name: '鹰眼公共平台',       dbName: 'LiangJian_Tool_EH', prefix: 'EH' },
-  'geo-whiteboard':         { name: 'Excalidraw 白板',    dbName: 'LiangJian_Tool_WB', prefix: 'WB' }
+  'wb-whiteboard':          { name: 'Excalidraw 白板',    dbName: 'LiangJian_Tool_WB', prefix: 'WB' }
 };
 
 // 按库存 Tab 顺序排列（后续 UI 依赖此顺序）
@@ -31,15 +32,29 @@ export const TOOL_ORDER = [
   'geo-china-standard-map',
   'geo-province-map',
   'geo-eagle-eye',
-  'geo-whiteboard'
+  'wb-whiteboard'
 ];
 
-// 每个工具库的版本号（每次表结构变更 +1）
+// 第三产品（Excalidraw 白板）工具 id，用于「按库分版本 / 按库分表」判断
+export const WHITEBOARD_TOOL_ID = 'wb-whiteboard';
+
+// 🚨 每个工具库的版本号（每次表结构变更 +1）
 // v2：新增 recyclebin 回收站表
 // v3：新增 fingerprints 指纹索引表（支撑千万级幂等去重）
+// ⚠️ 6 个地理工具库（CC/CM/WM/CS/PM/EH）永远停在 v3，不再跟随白板一起升级。
+//    新增表结构只能通过「按库分支」推进，禁止直接改这个常量（改了会波及 6 个老库）。
 export const TOOL_DB_VERSION = 3;
 
-// 每个工具库的表结构（5 张表）
+// 🖊️ 白板库（LiangJian_Tool_WB）独立版本号
+// 该库由早期版本创建时已是 v3 但缺 whiteboard 表，
+// 因此必须走 v3 → v4 升级补建（不能用 v1 重建，indexedDB.open 对已存在库降版会抛 VersionError）。
+export const WB_DB_VERSION = 4;
+
+// 按工具返回该库应使用的版本号
+export const getDBVersionForTool = (toolId) =>
+  (toolId === WHITEBOARD_TOOL_ID ? WB_DB_VERSION : TOOL_DB_VERSION);
+
+// 每个工具库的基础表结构（7 张表，全部工具共用）
 export const TOOL_STORES = [
   { name: 'annotations', keyPath: 'id' },
   { name: 'documents',   keyPath: 'id' },
@@ -60,6 +75,23 @@ export const TOOL_STORES = [
       { name: 'createdAt', keyPath: 'createdAt' }
     ] }
 ];
+
+// 🖊️ 白板专属表：仅 LiangJian_Tool_WB 拥有，6 个地理工具库不建此表
+// 主键为白板编号（如 WB-B.00001），一条记录 = 一块白板：
+//   { boardId, fileId, name, bounds, appState, scene, createdAt, updatedAt }
+// scene 为 Excalidraw 元素数组（JSON 可序列化），appState 为画布状态子集。
+export const WB_ONLY_STORES = [
+  { name: 'whiteboard', keyPath: 'boardId',
+    indexes: [
+      { name: 'fileId', keyPath: 'fileId' },
+      { name: 'updatedAt', keyPath: 'updatedAt' }
+    ] }
+];
+
+// 按工具返回该库应建的全部表结构：
+//   白板库 = 基础 7 表 + whiteboard；其余 6 库 = 基础 7 表（与升级前完全一致）
+export const getStoresForTool = (toolId) =>
+  (toolId === WHITEBOARD_TOOL_ID ? [...TOOL_STORES, ...WB_ONLY_STORES] : TOOL_STORES);
 
 // 生成带前缀的图形编号： CM.00001
 export const formatGraphicId = (toolId, seq) => {

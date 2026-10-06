@@ -4,7 +4,7 @@
 > 本文件是**跨会话的唯一权威记忆**。新会话开始时，AI 必须先读它。
 > **每轮对话结束前，AI 必须更新本文件的「数据现状」与「待办」两节。**
 
-最后更新：2026-10-06（初始界面新增第三个产品入口：Excalidraw 白板 + 数据信息）
+最后更新：2026-10-06（参考资料整理：抽离 Excalidraw 官方集成文档，删除 14.5MB 仓库导出，未改任何业务代码）
 
 ---
 
@@ -113,15 +113,24 @@
 - 已知限制：导入永远串行（AI 写不了 IndexedDB），并行只加速采集
 - 建议：先跑通单采集员再扩展
 
-### 14. 第三产品入口：Excalidraw 白板 + 数据信息（2026-10-06）
-- 初始界面 `Home.vue` 新增第三个入口卡片（🖊️），路由 `/gis/whiteboard`
-- `GisApp.vue` 新增工具组 `whiteboard`，含工具 `geo-whiteboard`（组件 `WhiteboardTool.vue`）
-- 组件路径：`src/components/tools/whiteboard/WhiteboardTool.vue`
-  - 纯 Canvas 白板（画笔/橡皮/撤销/清空）+ 右侧「数据信息」文本框
-  - 内容自动存 localStorage 键 `excalidraw_whiteboard_v1`，**不依赖 IndexedDB**
-  - 顶栏「保存当前工程」按钮对白板禁用（自动本地保存）
-- `toolRegistry.js` 注册前缀 `WB`、元数据 `LiangJian_Tool_WB`、加入 `TOOL_ORDER`
-- 白板组启动页为 launcher 卡片（与 card 组同风格）
+### 14. 第三产品入口占位：Excalidraw Whiteboard +数据信息（2026-10-06）
+- **需求边界**：只在初始界面加第三个产品入口。第三产品是**独立功能区**，体量大、架构复杂，本次不实现其功能，也不得改动既有代码
+- `Home.vue` 新增第三个入口卡片（🖊️），文案 `Excalidraw 白板 + 数据信息`，点击跳 `/gis/whiteboard`
+- **未改动** `GisApp.vue`、`toolRegistry.js` 及任何既有逻辑（首轮越界改动已全部回滚，`git status` 已确认）
+- 当前 `/gis/whiteboard` 在 GisApp 中无对应工具组 → 落到默认欢迎页，属占位状态
+- 第三产品正式落地时：应为其建立**独立路由/独立容器**，不要硬塞进现有 `groups` 工具组体系
+- **2026-10-06 后续决策（路线 A，用户已拍板）**：
+  - 白板定位 = **地图的补充视图**，元素必须带地理坐标 `lat/lng`
+  - 坐标来源：白板先绑定一个地理范围（bounds），元素画布坐标 `x/y` 换算为 `lat/lng`
+  - **不改指纹算法**（`fingerprint.js` 保持 v4，`buildFingerprint` 一行不动）
+  - 新增 toolId `wb-whiteboard`（前缀 `WB`，库 `LiangJian_Tool_WB`），已注册到 `toolRegistry.js`
+  - 元素点开有富文本详情，复用 `documents` 表（主键 `fileId_annotationId`）
+  - 白板元素享受全部既有待遇：编号 / 指纹去重 / 软删除回收站 / AI 指令 / 信息数据库
+  - 完整实施设计与改动清单见 `.agents/references/whiteboard-integration.md`
+  - **参考资料整理（2026-10-06）**：原先由用户提供的 `migrated-project-design.md` 实为 **Excalidraw 官方仓库完整导出**（14.5 MB / 36 万行，含全量源码与 locale），并非本项目设计文档，已删除以免污染检索。其中唯一有约束力的两份文档已抽为独立参考：
+    - `.agents/references/excalidraw-migration-guide.md`（16.5 KB）= 官方 `MIGRATION_GUIDE.md`，11 节，讲 Excalidraw 架构、包依赖图、集成面、陷阱
+    - `.agents/references/excalidraw-vue-integration.md`（5.1 KB）= 官方 `TARGET_INTEGRATION_VUE.md`，讲 Vue↔React 桥接（onMounted + createRoot / onBeforeUnmount + unmount、非零高度、懒加载）
+    - 两份文档与 `whiteboard-integration.md` **无架构级冲突**（官方"路线 A"即本项目"自托管"）；细节差异与待裁决项已在本轮分析中列出
 
 ### 11. 时间字段与分组联动（2026-10-06）
 - `aiImporter.js` 的 `buildDocHtml` 新增渲染 `time` 字段（富文本顶部显示「时间：xxx」）
@@ -258,7 +267,7 @@
 - [x] 新建 `.clinerules/00-index.md`：Cline 常驻薄索引，触发式加载 + 硬约定（2026-10-06 完成）
 - [x] skill 去重：抽取 `.agents/references/common-verification.md`，import 与 recycle 两个 skill 移除重复验证命令与横切约定（2026-10-06 完成）
 - [ ] 可选：把 `代码修改返还完整代码` skill 与 `.clinerules` 的重复表述进一步合并
-- [ ] 白板功能后续可按需扩展：导入/导出 Excalidraw 原生 JSON、白板数据与 IndexedDB 工程体系打通（当前仅 localStorage 自动保存）
+- [ ] 第三产品（Excalidraw Whiteboard +数据信息）正式落地：独立路由 + 独立容器 + 完整功能，需另起专门任务，勿混入现有地图工具组
 
 ---
 

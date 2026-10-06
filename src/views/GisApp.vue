@@ -69,10 +69,11 @@
           <div id="tool-header-slot" class="header-slot"></div>
           
           <!-- 🚨 保存按钮已移动到这里 -->
+          <!-- 🖊️ 第三产品（白板）为独立功能区，无「工程文件」概念，内容自动本地保存，故禁用存档 -->
           <button 
             class="tool-save-btn" 
-            :disabled="currentTool?.id === 'geo-eagle-eye' || currentTool?.id === 'geo-whiteboard'"
-            :title="currentTool?.id === 'geo-eagle-eye' ? '鹰眼平台数据为实时自动保存，无需手动存档' : (currentTool?.id === 'geo-whiteboard' ? '白板内容自动本地保存，无需手动存档' : '保存当前工程到文件库存')"
+            :disabled="currentTool?.id === 'geo-eagle-eye' || currentTool?.id === 'wb-whiteboard'"
+            :title="currentTool?.id === 'geo-eagle-eye' ? '鹰眼平台数据为实时自动保存，无需手动存档' : (currentTool?.id === 'wb-whiteboard' ? '白板内容自动本地保存，无需手动存档' : '保存当前工程到文件库存')"
             @click="handleSaveCurrentProject"
           >
             💾 保存当前工程
@@ -117,19 +118,6 @@
             </div>
           </div>
           
-          <!-- 🖊️ 白板组启动界面 -->
-          <div v-else-if="currentGroupId === 'whiteboard'" class="card-group-launcher">
-            <h2 class="launcher-title">Excalidraw 白板 + 数据信息</h2>
-            <p class="launcher-subtitle">白板协作与数据信息整理空间</p>
-            <div class="launcher-actions">
-              <div class="launcher-card" @click="openTool(currentGroup.tools[0])">
-                <div class="launcher-icon">🖊️</div>
-                <div class="launcher-name">打开 Excalidraw 白板</div>
-                <div class="launcher-desc">自由绘制、标注与数据信息整理</div>
-              </div>
-            </div>
-          </div>
-
           <!-- 其他工具组默认欢迎界面 -->
           <div v-else class="default-welcome">
             <div class="welcome-icon">
@@ -323,7 +311,6 @@ import ChinaProvinceMapTool from '../components/tools/geo/ChinaProvinceMapTool.v
 import CustomCanvasTool from '../components/tools/geo/CustomCanvasTool.vue';
 import ChinaStandardMapTool from '../components/tools/geo/ChinaStandardMapTool.vue';
 import EagleEyeMapTool from '../components/tools/geo/EagleEyeMapTool.vue';
-import WhiteboardTool from '../components/tools/whiteboard/WhiteboardTool.vue';
 
 import InfoDatabase from '../components/common/InfoDatabase.vue';
 import PendingUnplacedModal from '../components/common/PendingUnplacedModal.vue';
@@ -425,13 +412,6 @@ const groups = ref([
       { id: 'geo-world-map', name: '3. 世界卫星地图信息分布空间', component: markRaw(WorldMapTool) },
       { id: 'geo-china-standard-map', name: '4. 中国标准地图信息分布空间', component: markRaw(ChinaStandardMapTool) },
       { id: 'geo-province-map', name: '5. 中国省级行政区信息分布空间', component: markRaw(ChinaProvinceMapTool) }
-    ]
-  },
-  {
-    id: 'whiteboard',
-    name: '🖊️ Excalidraw Whiteboard +数据信息',
-    tools: [
-      { id: 'geo-whiteboard', name: '1. Excalidraw 白板', component: markRaw(WhiteboardTool) }
     ]
   }
 ]);

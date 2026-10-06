@@ -47,5 +47,24 @@ export const TOOL_DEFAULTS = {
       annoUrl: 'https://webst0{s}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}'
     },
     initialView: { center: [39.0123, 117.3456], zoom: 15 }
+  },
+  // 🖊️ 第三产品（Excalidraw 白板，地图的补充视图）
+  //    bounds / canvas 是「画布坐标 ↔ 经纬度」换算三件套，一经确定即冻结：
+  //    若随窗口尺寸浮动，已登记元素的坐标会漂移、指纹失效。
+  //    运行时以 meta 表 whiteboard_bounds / whiteboard_canvas 为准，此处仅作首启兜底。
+  'wb-whiteboard': {
+    baseLayerConfig: { type: 'none' },
+    initialView: { center: [39.0123, 117.3456], zoom: 15 },
+    whiteboardBounds: { minLat: 39.0, maxLat: 39.3, minLng: 117.1, maxLng: 117.5 },
+    whiteboardCanvas: { canvasWidth: 1600, canvasHeight: 1000 },
+    boardName: '白板 1'
   }
+};
+
+// 白板出厂默认值（独立导出，供白板模块与 meta 兜底引用）
+export const WHITEBOARD_DEFAULTS = {
+  bounds: { minLat: 39.0, maxLat: 39.3, minLng: 117.1, maxLng: 117.5 },
+  canvasWidth: 1600,
+  canvasHeight: 1000,
+  boardName: '白板 1'
 };

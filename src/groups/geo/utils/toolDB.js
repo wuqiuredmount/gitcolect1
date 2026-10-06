@@ -1,6 +1,6 @@
 // src/groups/geo/utils/toolDB.js
 // 🚨 Phase 2a：每工具一库的通用操作封装
-import { TOOL_META, TOOL_ORDER, TOOL_DB_VERSION, TOOL_STORES } from './toolRegistry';
+import { TOOL_META, TOOL_ORDER, TOOL_DB_VERSION, WB_DB_VERSION, TOOL_STORES, getDBVersionForTool, getStoresForTool } from './toolRegistry';
 
 // 缓存已打开的 DB 连接（同一库复用，避免重复 open）
 const dbCache = new Map();
@@ -17,15 +17,19 @@ export const openToolDB = (toolId) => {
   }
   
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(meta.dbName, TOOL_DB_VERSION);
+    // 🖊️ 按库取版本号：白板库 = 4，其余 6 库 = 3（不升级）
+    const dbVersion = getDBVersionForTool(toolId);
+    // 🖊️ 按库取表结构：白板库多一张 whiteboard 表
+    const stores = getStoresForTool(toolId);
+    const request = indexedDB.open(meta.dbName, dbVersion);
 
     request.onupgradeneeded = (event) => {
       const db = event.target.result;
       const oldVersion = event.oldVersion;
 
-      // 首次创建：建全部表（含 v2 的 recyclebin）
+      // 首次创建：建该库应有的全部表（老库 = 7 张；白板库 = 8 张含 whiteboard）
       if (oldVersion === 0) {
-        TOOL_STORES.forEach(storeConfig => {
+        stores.forEach(storeConfig => {
           const store = db.createObjectStore(storeConfig.name, { keyPath: storeConfig.keyPath });
           if (storeConfig.indexes) {
             storeConfig.indexes.forEach(idx => {
@@ -51,6 +55,16 @@ export const openToolDB = (toolId) => {
           fp.createIndex('fileId', 'fileId');
           fp.createIndex('createdAt', 'createdAt');
           console.log(`[toolDB] ${meta.dbName} 升级到 v3：已补建 fingerprints 表`);
+        }
+      }
+      // 🖊️ v3 → v4：补建 whiteboard 白板场景表
+      // 只对白板库生效：其余 6 库版本号停在 3，永远不会进入 < 4 这个分支
+      if (oldVersion > 0 && oldVersion < 4) {
+        if (!db.objectStoreNames.contains('whiteboard')) {
+          const wb = db.createObjectStore('whiteboard', { keyPath: 'boardId' });
+          wb.createIndex('fileId', 'fileId');
+          wb.createIndex('updatedAt', 'updatedAt');
+          console.log(`[toolDB] ${meta.dbName} 升级到 v4：已补建 whiteboard 表`);
         }
       }
     };
