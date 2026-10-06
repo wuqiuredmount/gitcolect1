@@ -7,8 +7,9 @@
 // 关键约束（不得更改）：
 //   1. 不改指纹算法（fingerprint.js 保持 v4，buildFingerprint 一行不动）
 //   2. 白板元素 type 一律加 `wb-` 前缀（wb-rectangle 等），与地图元素指纹天然隔离
-//   3. 无自定义名称（customData.name）或坐标换算失败的元素 → 不注册指纹、不入库
-//      （此时它在数据库里「不存在」，属未登记图形，UI 需引导补全）
+//   3. 🖊️ 全登记：所有未删除元素都入库，不论有没有自定义名称。
+//      无 customData.name 时用 element.id 作为兜底名称参与指纹计算（指纹算法本身不动）。
+//      唯一不入库的情况：坐标换算失败（bounds/canvas 缺失或非法）。
 //   4. 本文件只处理元素级差异，场景整体由 boardStore 负责
 
 import { appendLayers, getAllLayers, saveAllLayers } from '../../geo/utils/annotationStore.js';
@@ -76,8 +77,24 @@ export const rebuildIdMap = async (fileId) => {
   return map;
 };
 
-// 元素名称来源：约定写在 customData.name（兼容 customData.title）
+// 元素兜底名称：算法要求 name 必须有效，故无自定义名称时用 element.id 兜底
+export const getFallbackName = (element) =>
+  String((element && element.id) || '').trim();
+
+// 元素名称来源：约定写在 customData.name（兼容 customData.title）；
+// 🖊️ 全登记路线：没有自定义名称时返回 element.id，保证「无名元素」也能拿到有效指纹入库。
+//    注意：调用方若需要「区分原名 / 兜底名」，请另外调 getCustomName 判断。
 export const getElementName = (element) => {
+  if (!element) return '';
+  const cd = element.customData || {};
+  const raw = cd.name || cd.title || '';
+  const trimmed = String(raw).trim();
+  if (trimmed) return trimmed;
+  return getFallbackName(element);
+};
+
+// 仅取用户显式填写的名称（不含 element.id 兜底），用于判断是否需要在 UI 引导用户命名
+export const getCustomName = (element) => {
   if (!element) return '';
   const cd = element.customData || {};
   const raw = cd.name || cd.title || '';
@@ -94,7 +111,9 @@ export const getElementGroup = (element) => {
 // 白板元素类型：加 wb- 前缀，防止与地图元素指纹碰撞
 export const getWbType = (element) => `wb-${(element && element.type) || 'element'}`;
 
-// 判定元素是否「可登记」：必须有自定义名称，且坐标换算成功
+// 判定元素是否「可登记」：只要有 id（兜底名称）且坐标换算成功即可登记。
+// 🖊️ 全登记路线：不再要求必须有自定义名称——无名元素的指纹用 element.id 参与计算。
+//    唯一排除项：已软删除、无法换算坐标（bounds/canvas 缺失或非法）的元素。
 export const isRegisterable = (element, bounds, canvas) => {
   if (!element || element.isDeleted) return false;
   if (!getElementName(element)) return false;
@@ -244,7 +263,9 @@ export const syncScene = async ({
         const geo = (boundsOk && canvasOk) ? canvasToLatLng(anchor, bounds, canvas) : null;
         const geometry = getElementGeometry(element);
         const moved = geo && (Math.abs(geo.lat - prev.lat) > 1e-9 || Math.abs(geo.lng - prev.lng) > 1e-9);
-        const renamed = !!name && name !== prev.objectName;
+        // 🖊️ 全登记后 name 恒非空（无名元素取 element.id），这里直接比较即可；
+        //    prev.objectName 存的也是同一套兜底值，语义一致。
+        const renamed = name !== prev.objectName;
         const reshaped = geometry.wbW !== prev.wbW || geometry.wbH !== prev.wbH;
 
         if (moved || renamed || reshaped) {
@@ -280,7 +301,7 @@ export const syncScene = async ({
       }
     }
 
-    // 未登记：必须「有名称 + 坐标换算成功」才入库，否则算未登记图形（跳过）
+    // 未登记：只要坐标换算成功就入库（🖊️ 全登记：无名元素用 element.id 兜底）
     if (!autoRegister) continue;
     if (!boundsOk || !canvasOk || !name) { result.skipped++; continue; }
 
@@ -371,7 +392,8 @@ export const registerElement = async ({
   element, idMap, bounds, canvas, fileId = 'legacy-file', name, group
 }) => {
   if (!element || !idMap || !isValidBounds(bounds) || !isValidCanvas(canvas)) return null;
-  const finalName = String(name || getElementName(element) || '').trim();
+  // 🖊️ 全登记：名称缺省时用 element.id 兜底（与 syncScene 保持一致）
+  const finalName = String(name || getElementName(element) || getFallbackName(element) || '').trim();
   if (!finalName) return null;
   const geo = canvasToLatLng(getElementAnchor(element), bounds, canvas);
   if (!geo) return null;
