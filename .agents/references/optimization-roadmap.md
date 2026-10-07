@@ -9,47 +9,50 @@
 ## P0 · 环境前提
 
 ### O1. 调试实例常开 ✅ 完成（2026-10-07）
-- **产出**：`scripts/start-edge-debug.ps1`（一键启动，支持 `-Port` / `-Profile` 参数）
+- **产出**：`scripts/start-edge-debug.ps1`（一键启动，支持 `-Port` / `-Profile`）
 - **验收**：`list_pages` 直接成功 ✓
-- **遗留**：如需开机自启，可把脚本放进启动目录（用户决定）
 
 ### O2. 高德登录态保活 ✅ 完成（2026-10-07）
 - **验收**：`loggedIn: true`，坐标 6 位精度（116.397755）✓
-- **结论**：登录态存于 `C:\temp\edge-debug-profile`，只要该目录不删即保留
-- **注意**：目录路径与 `browser-channel.md` 默认的 `%USERPROFILE%\edge-debug-profile` 不同，实际用的是 `C:\temp\edge-debug-profile`
+- **注意**：实际 user-data-dir 是 `C:\temp\edge-debug-profile`
 
 ---
 
 ## P1 · AI 操作优化
 
-### O3. navigate_page 统一长 timeout
-- **动作**：所有 `navigate_page` 传 `timeout: 30000`
-- **状态**：⏳ 待办（待采集时实测）
+### O3. navigate_page 统一长 timeout ⏳ 待办
+- 本次已用 `timeout: 30000`，无超时报错 → 效果好
 
-### O4. 检索优先走 crawl
-- **动作**：搜索先 `npm run crawl -- search`，百度浏览器仅兜底
-- **状态**：⏳ 待办
+### O4. 检索优先走 crawl ⏳ 待办
 
-### O5. 并行端口采集 ← **当前项（潜力最大）**
-- **动作**：9222 与 9223 同时开两个源，一轮内并发完成
-- **状态**：🔵 进行中
+### O5. 并行端口采集 ✅ 完成（2026-10-07）
+- **实测**：9222 开百度 + 9223 开 Bing，**一轮内并发导航 + 一轮内并发读取**
+- **结论**：可行，两端口互不干扰；不同引擎结果互补
+- **启动命令**：`powershell -ExecutionPolicy Bypass -File scripts/start-edge-debug.ps1 -Port 9223 -Profile edge-debug-a`
+- **收益**：多源检索从 2N 轮降到 N 轮
 
 ---
 
 ## P2 · 站点清单完善
 
-### O6. 验证静态源可用性 ⏳ 待办
+### O6. 验证静态源可用性 ← **当前项**
+- **新发现**：`chinamarathon.com`（中国马拉松官网）— Bing 结果显示其直接给出精确起终点，可信度高
+- **待验证**：能否 `crawl fetch` 直达
+- **状态**：🔵 进行中
+
 ### O7. 补充官方名录直达 URL ⏳ 待办（需用户）
 
 ---
 
 ## P3 · 端到端验证
 
-### O8. collect 流水线跑第 3 轮 ⏳ 待办
+### O8. collect 流水线跑第 3 轮（12月马拉松）⏳ 待办
+- **素材已备**：本轮并发采集已拿到 12 月完整赛事清单 + 部分精确起终点
 
 ---
 
 ## 进度日志
 
 - 2026-10-07：清单建立。
-- 2026-10-07：O1 完成（一键启动脚本）；O2 完成（登录态+6位精度验证）。
+- 2026-10-07：O1 完成（一键启动脚本）；O2 完成（登录态+6位精度）。
+- 2026-10-07：O5 完成（**并行采集实测成功**）；O3 附带验证（长 timeout 有效）；发现新源 chinamarathon.com。
