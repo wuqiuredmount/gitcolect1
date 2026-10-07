@@ -24,6 +24,12 @@
 7. 复述内容以 MEMO 的「六、待办」为准，不要凭记忆。
 8. **每完成一个任务，报告写进** `.agents/mailbox/to-deepseek.md`（覆盖式，只留本轮），
    对话里简短说一句「报告已写入 mailbox」即可，不必在对话里重复全文。
+9. **长任务（超过 3 步）必须用** `.agents/references/active-task.md` **跟踪**：
+   - 任务开始 → 填「当前任务 + 目标」
+   - 每完成一步 → 立即更新「进度 + 断点」（不攒着）
+   - 关键决策 → 也写进去
+   - 任务完成 → 清空，恢复空模板
+   - 用户发「**继续**」时 → 读本文件从「下一步」续
 
 ---
 
@@ -41,6 +47,7 @@
 | 创建或更新 skill | `.webcode/builtin-skills/create-skills/SKILL.md` |
 | **执行 npm run crawl（全网抓取）前** | `.agents/references/crawl-security.md`（安全策略 + AI 8 条硬规矩） |
 | **任何「改代码」任务开始前** | `.agents/references/red-lines.md`（红线清单：绝对禁止 / 谨慎改动 / 架构 / 数据库 / 命令） |
+| **用户只发一个字「继续」时** | `.agents/references/active-task.md`（读「下一步」从断点续；若为空模板则问用户要续哪个任务） |
 
 加载方式：用 read_file 读取对应文件后，再按其中流程执行，不要凭记忆操作。
 
