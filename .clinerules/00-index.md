@@ -48,6 +48,7 @@
 | **执行 npm run crawl（全网抓取）前** | `.agents/references/crawl-security.md`（安全策略 + AI 8 条硬规矩） |
 | **任何「改代码」任务开始前** | `.agents/references/red-lines.md`（红线清单：绝对禁止 / 谨慎改动 / 架构 / 数据库 / 命令） |
 | **用户只发一个字「继续」时** | `.agents/references/active-task.md`（读「下一步」从断点续；若为空模板则问用户要续哪个任务） |
+| **被问及「价值 / 意义 / 哲学 / 使命 / 为什么做这个项目」** | `.agents/MISSION.md`（项目使命与哲学原典；必须**原样引用**，不得改写或稀释） |
 
 加载方式：用 read_file 读取对应文件后，再按其中流程执行，不要凭记忆操作。
 
