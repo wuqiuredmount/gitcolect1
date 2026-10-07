@@ -129,6 +129,36 @@ const scrollToElement = (elementId) => {
   }
 };
 
+// 🆕【P2】回到中心点：把视口对准「全部活元素」的外接框。
+// 【为什么不复用 scrollToElement】它只接收**单个**元素 id（内部 find 后传对象），
+//   而「回到中心点」要的是整个场景的包围盒 ⇒ 必须传数组给 scrollToContent。
+// 【入参语义】不传参 = 用「现状实况」（api.getSceneElements() 过滤 isDeleted），
+//   避免调用方自己维护一份可能与画布脱节的元素快照。
+// 【空场景策略】没有任何活元素时**直接返回 false、不做任何滚动** ——
+//   scrollToContent([]) 在 Excalidraw 里行为未定义（可能把视口甩到原点），
+//   按 DeepSeek 指令「元素为空不动作」处理。返回布尔值供调用方做提示。
+// 【为什么不用 getApi() 在外面自己调】把「过滤 isDeleted + 空判定 + try/catch」
+//   收在组件内部一处，外部只关心「成没成」，与既有 scrollToElement 风格一致。
+const centerToContent = (elements) => {
+  if (!api || typeof api.scrollToContent !== 'function') return false;
+  let target = elements;
+  if (!Array.isArray(target)) {
+    if (typeof api.getSceneElements !== 'function') return false;
+    target = api.getSceneElements();
+  }
+  // Excalidraw 的删除是软删除（isDeleted=true 仍留在数组里）→ 必须过滤，
+  // 否则「全删光的白板」会被判定为「有元素」而滚到一个已删除元素的框上。
+  const alive = target.filter(e => e && !e.isDeleted);
+  if (alive.length === 0) return false;
+  try {
+    api.scrollToContent(alive, { fitToViewport: true, animate: true });
+    return true;
+  } catch (e) {
+    console.warn('[ExcalidrawBoard] 回到中心点失败:', e);
+    return false;
+  }
+};
+
 // 监听初始场景被外部替换（例如切换白板时）→ 整体刷新画布
 // 🚨【防御层 3b】旧代码 `if (!api) return` 在 api 尚未就绪时会把这次变更永久丢弃，
 //   首帧救不回。现改为打 dirty 标记，由 onApiReady 补执行。
@@ -145,6 +175,7 @@ defineExpose({
   getScene,
   setScene,
   scrollToElement,
+  centerToContent,
   getApi: () => api
 });
 </script>

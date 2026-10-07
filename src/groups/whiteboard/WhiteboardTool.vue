@@ -15,6 +15,12 @@
       </span>
       <span v-if="lastSyncAt" class="wb-badge wb-badge-dim">同步于 {{ lastSyncText }}</span>
       <span class="wb-spacer"></span>
+      <!-- 🆕【P2】回到中心点：把视口对准全部活元素的外接框。
+           链路：handleBackToCenter → boardRef.centerToContent()
+                 → ExcalidrawBoard 内部 api.scrollToContent(alive, { fitToViewport, animate })
+           ⚠️ 不直接调 boardRef.getApi().scrollToContent —— 空场景/软删除过滤/异常兜底
+              都收在 ExcalidrawBoard.centerToContent 里，外部只处理「成没成」。 -->
+      <button class="wb-btn" @click="handleBackToCenter">回到中心点</button>
       <!-- 🧪【临时调试，2026-10-07】清理「幽灵元素」：见 handleCleanGhostElements 注释。
            ⚠️ 排查结束后必须整块删除（含下方 handler / 导入 / 样式）。 -->
       <button class="wb-btn wb-btn-danger" @click="handleCleanGhostElements" :disabled="ghostCleaning">
@@ -780,6 +786,34 @@ const handleDocTitleUpdate = (payload) => {
   const target = registeredList.value.find(item => item && item.id === payload.id);
   if (target) target.objectName = payload.title;
   console.debug('[白板面板] 富文本标题已改（本地，等 runSync 落库）:', payload.id, '→', payload.title);
+};
+
+/**
+ * 🆕【P2】状态栏「回到中心点」→ 视口对准全部活元素的外接框
+ *
+ * 【为什么走 centerToContent 而不是 getApi().scrollToContent()】
+ *   ① 空场景必须**不动作**：scrollToContent([]) 行为未定义（可能把视口甩到原点）；
+ *   ② 软删除过滤：Excalidraw 删元素只置 isDeleted=true，数组里仍在 →
+ *      不过滤会把「已删空的白板」误判为有内容；
+ *   ③ 这两个判定收在 ExcalidrawBoard.centerToContent 内部一处，
+ *      外部只拿布尔结果，避免把画布细节散落到业务组件。
+ *
+ * 【为什么不做 loading/disabled】滚动画布是**同步**调用（animate 只是视觉过渡），
+ *   不存在可观测的等待期，加禁用态反而会引入状态抖动。
+ */
+const handleBackToCenter = () => {
+  const api = boardRef.value?.getApi?.();
+  // 画布未就绪（懒加载中 / 已卸载）→ 静默返回，不抛错、不弹窗
+  if (!api) return;
+
+  const ok = typeof boardRef.value.centerToContent === 'function'
+    ? boardRef.value.centerToContent()
+    : false;
+
+  if (!ok) {
+    // 空白板 或 scrollToContent 不可用：提示但**不改变任何状态**
+    console.debug('[白板] 回到中心点：无活元素或画布 API 不可用，未执行');
+  }
 };
 
 /**
