@@ -15,7 +15,8 @@
     "crawl": "node scripts/crawl/index.mjs",
     "integrity": "node scripts/integrity.mjs",
     "backup": "node scripts/backup.mjs",
-    "data-ops": "node scripts/data-ops.mjs"
+    "data-ops": "node scripts/data-ops.mjs",
+    "collect": "node scripts/collect/index.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.1",
