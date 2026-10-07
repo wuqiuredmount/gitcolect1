@@ -9,23 +9,27 @@ description: 当用户在本工作区（app100-multifunction 良件-空间信息
 
 ## 核心规则
 
-**开始任何本项目任务前，前两步必须读取（顺序不可颠倒）：**
+**开始任何本项目任务前，前三步必须读取（顺序不可颠倒）：**
 
     .agents/PROJECT_MEMO.md                ← 项目「状态」（进度/数据/坑/待办）
     .agents/references/architecture-map.md  ← 项目「结构」（改哪个文件 + 定位流程）
+    .agents/mailbox/to-deepseek.md          ← 协作信箱（Cline 的报告 / 指令）
 
 - MEMO 恢复**上下文**（现在在哪、做过什么、还有什么没做）。
 - 架构地图恢复**结构**（改任务时该读哪些文件，§六 定位流程表）。
-- 两份读完，**无需用户复述背景，也无需扫全仓**。
+- 信箱检查**Cline 有没有留言**（避免漏掉它的报告，也避免重复劳动）。
+- 三份读完，**无需用户复述背景，也无需扫全仓**。
 
 ## 工作流
 
 1. 读 `.agents/PROJECT_MEMO.md` + `.agents/references/architecture-map.md`。
-2. 若 MEMO 提到相关 skill（如 `ai-import-geo-markers`、`ai-recycle-bin-ops`），按需读取对应 `SKILL.md`；通用验证命令见 `.agents/references/common-verification.md`。
-3. 按 architecture-map §六「定位流程」定位到具体文件，**只读需要的局部**。
-4. 按 MEMO 第二节「协作硬性约定」执行任务。
-5. 任务涉及代码修改时，同时遵守 `.agents/skills/代码修改返还完整代码/SKILL.md`。
-6. 本轮对话结束前，更新 MEMO 的「四、数据现状」与「六、待办」；若发现新坑，补进「五」。
+2. **读协作信箱** `.agents/mailbox/to-deepseek.md`——若有 Cline 的报告，本轮优先处理；读后标注「（已读）」。通信规则见 `.agents/references/ai-mailbox-protocol.md`。
+3. 若 MEMO 提到相关 skill（如 `ai-import-geo-markers`、`ai-recycle-bin-ops`），按需读取对应 `SKILL.md`；通用验证命令见 `.agents/references/common-verification.md`。
+4. 按 architecture-map §六「定位流程」定位到具体文件，**只读需要的局部**。
+5. 按 MEMO 第二节「协作硬性约定」执行任务。
+6. 任务涉及代码修改时，同时遵守 `.agents/skills/代码修改返还完整代码/SKILL.md`。
+7. **需要给 Cline 派活时** → 写 `.agents/mailbox/to-cline.md`（覆盖式，格式见协议文档）。
+8. 本轮对话结束前，更新 MEMO 的「四、数据现状」与「六、待办」；若发现新坑，补进「五」。
 
 ## Token 分层（勿破坏）
 

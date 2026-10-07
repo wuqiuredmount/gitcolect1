@@ -14,6 +14,7 @@
 1. **先读** `.agents/PROJECT_MEMO.md`（唯一记忆文件，必读，无例外）。
 2. **再读协作信箱** `.agents/mailbox/to-cline.md`
    （若存在且非空 → 那是 DeepSeek 写给你的指令，优先处理；读完标注「（已读）」或清空，避免重复处理）。
+   通信规则详见 `.agents/references/ai-mailbox-protocol.md`（覆盖式铁律、报告格式、角色分工）。
 3. **定位文件用架构地图**（2026-10-08 新增）：`.agents/references/architecture-map.md`
    —— 一站式架构图 + 「改任务时的定位流程」表。**先读它、再决定要不要读局部**，不要先扫全仓。
 4. **白板任务**再按需读（**P0/P1/P2 已完成**，不再主动读已完成的规划）：
@@ -37,7 +38,7 @@
 
 | 命中条件 | 必须先读取 |
 |---|---|
-| **每个新对话（无例外）** | `.agents/mailbox/to-cline.md`（存在且非空 = DeepSeek 的指令，优先处理；处理完标注「（已读）」或清空） |
+| **每个新对话（无例外）** | `.agents/mailbox/to-cline.md`（存在且非空 = DeepSeek 的指令，优先处理；处理完标注「（已读）」或清空）<br>+ `.agents/references/ai-mailbox-protocol.md`（通信协议：覆盖式、格式、分工） |
 | 任何开发 / 数据 / 代码 / 调试任务 | `.agents/PROJECT_MEMO.md`（见「零」启动清单） |
 | **定位「改哪个文件」** | `.agents/references/architecture-map.md`（一站式架构图 + 定位流程表） |
 | **白板 / Excalidraw / wb- 相关任何改动** | `.agents/references/whiteboard-integration.md`（原始约束，已实施完）<br>+ `.agents/references/architecture-map.md` §四（白板模块现状） |
