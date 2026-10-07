@@ -3,6 +3,82 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlink
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { promises as dns } from 'node:dns';
+import { isIP } from 'node:net';
+
+// ===== 安全边界 =====
+// 详细策略见 .agents/references/crawl-security.md
+export const MAX_BYTES = 5 * 1024 * 1024;       // 单次响应 5MB 上限
+export const MAX_REDIRECTS = 3;                  // 重定向最多 3 跳
+export const CT_WHITELIST = [                    // 内容类型白名单
+  'text/html', 'text/plain', 'text/xml', 'application/xml',
+  'application/json', 'application/xhtml+xml', 'text/markdown'
+];
+
+// 内网 / 危险 IP 段（SSRF 防护）
+function isBlockedIp(ip) {
+  if (!ip) return true;
+  const v = isIP(ip);
+  if (v === 4) {
+    const p = ip.split('.').map(Number);
+    if (p[0] === 10) return true;
+    if (p[0] === 127) return true;
+    if (p[0] === 0) return true;
+    if (p[0] === 169 && p[1] === 254) return true;      // link-local
+    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+    if (p[0] === 192 && p[1] === 168) return true;
+    if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true;  // CGNAT
+    if (p[0] >= 224) return true;                       // 组播 / 保留
+    return false;
+  }
+  if (v === 6) {
+    const low = ip.toLowerCase();
+    if (low === '::1' || low === '::') return true;
+    if (low.startsWith('fe80') || low.startsWith('fc') || low.startsWith('fd')) return true;
+    if (low.startsWith('ff')) return true;
+    return false;
+  }
+  return true;
+}
+
+// URL 语法 + 主机名校验（未做 DNS，只做静态检查）
+export function validateUrl(rawUrl) {
+  let u;
+  try { u = new URL(rawUrl); } catch (e) { return { ok: false, reason: 'URL 语法非法' }; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    return { ok: false, reason: '仅允许 http(s)，拒绝 ' + u.protocol };
+  }
+  const host = u.hostname.toLowerCase();
+  if (!host) return { ok: false, reason: '空主机名' };
+  if (host === 'localhost' || host.endsWith('.localhost')) return { ok: false, reason: '拒绝 localhost' };
+  if (host.endsWith('.local') || host.endsWith('.internal')) return { ok: false, reason: '拒绝内网后缀' };
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host) && isBlockedIp(host)) {
+    return { ok: false, reason: '拒绝内网 IP: ' + host };
+  }
+  if (host.includes(':') && isBlockedIp(host)) {
+    return { ok: false, reason: '拒绝内网 IPv6: ' + host };
+  }
+  return { ok: true, url: u.toString(), host };
+}
+
+// 解析后二次校验（防 DNS rebinding / A 记录指向内网）
+export async function validateUrlResolved(rawUrl) {
+  const v = validateUrl(rawUrl);
+  if (!v.ok) return v;
+  const host = v.host;
+  if (isIP(host)) return v;  // 字面量 IP 已在上一步校验
+  try {
+    const addrs = await dns.lookup(host, { all: true, verbatim: true });
+    for (const a of addrs) {
+      if (isBlockedIp(a.address)) {
+        return { ok: false, reason: 'DNS 解析到内网地址 ' + a.address + '（' + host + '）' };
+      }
+    }
+    return { ok: true, url: v.url, host, resolvedIps: addrs.map(a => a.address) };
+  } catch (e) {
+    return { ok: false, reason: 'DNS 解析失败：' + e.message };
+  }
+}
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export const CACHE_DIR = resolve(ROOT, '.cache/crawl');
@@ -43,22 +119,87 @@ export function cacheClear() {
 }
 
 // ---------- 抓取 ----------
-export async function fetchText(url, { timeout = 20000, retries = 2, useCache = true } = {}) {
+// 单次 fetch（手动跟随重定向，每跳重校验 URL）
+async function fetchOnce(url, timeout) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeout);
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: { 'User-Agent': UA, 'Accept': 'text/html,application/xhtml+xml,text/plain;q=0.9,application/json;q=0.8' },
+      signal: ctrl.signal,
+      redirect: 'manual'  // 手动处理重定向（每跳都过白名单）
+    });
+  } finally { clearTimeout(timer); }
+  return res;
+}
+
+export async function fetchText(rawUrl, { timeout = 20000, retries = 2, useCache = true } = {}) {
+  // 0) 静态 URL 校验
+  const v0 = validateUrl(rawUrl);
+  if (!v0.ok) throw new Error('[安全] ' + v0.reason);
+
+  // 1) 缓存（命中即返回，不触网）
   if (useCache) {
-    const c = cacheGet('fetch', url);
-    if (c && c.data && typeof c.data.html === 'string') return { html: c.data.html, fromCache: true };
+    const c = cacheGet('fetch', v0.url);
+    if (c && c.data && typeof c.data.html === 'string') {
+      return { html: c.data.html, fromCache: true, finalUrl: c.data.finalUrl || v0.url };
+    }
   }
+
   let lastErr;
   for (let i = 0; i <= retries; i++) {
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), timeout);
-      const res = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'text/html,application/xhtml+xml' }, signal: ctrl.signal, redirect: 'follow' });
-      clearTimeout(timer);
+      let cur = v0.url;
+      let hops = 0;
+      let res = await fetchOnce(cur, timeout);
+
+      // 手动处理重定向
+      while (res.status >= 300 && res.status < 400 && hops < MAX_REDIRECTS) {
+        const loc = res.headers.get('location');
+        if (!loc) break;
+        const next = new URL(loc, cur).toString();
+        const v = validateUrl(next);
+        if (!v.ok) throw new Error('[安全] 重定向被拒：' + v.reason);
+        cur = v.url;
+        hops++;
+        res = await fetchOnce(cur, timeout);
+      }
+      if (hops >= MAX_REDIRECTS && res.status >= 300 && res.status < 400) {
+        throw new Error('[安全] 重定向超过 ' + MAX_REDIRECTS + ' 跳');
+      }
+
       if (!res.ok) throw new Error('HTTP ' + res.status);
-      const html = await res.text();
-      if (useCache) cacheSet('fetch', url, { html });
-      return { html, fromCache: false };
+
+      // 2) Content-Type 白名单
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      const ctOk = CT_WHITELIST.some(t => ct.includes(t));
+      if (!ctOk) throw new Error('[安全] Content-Type 不在白名单: ' + (ct || '(空)'));
+
+      // 3) 响应大小上限（先看 content-length，无则流式累计）
+      const cl = Number(res.headers.get('content-length') || 0);
+      if (cl && cl > MAX_BYTES) throw new Error('[安全] 响应过大 ' + cl + ' 字节（上限 ' + MAX_BYTES + '）');
+
+      const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+      let html = '';
+      if (reader) {
+        const dec = new TextDecoder('utf-8');
+        let total = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total > MAX_BYTES) { try { reader.cancel(); } catch (e) {} throw new Error('[安全] 响应超过 ' + MAX_BYTES + ' 字节，已中止'); }
+          html += dec.decode(value, { stream: true });
+        }
+        html += dec.decode();
+      } else {
+        html = await res.text();
+        if (Buffer.byteLength(html) > MAX_BYTES) throw new Error('[安全] 响应过大');
+      }
+
+      if (useCache) cacheSet('fetch', v0.url, { html, finalUrl: cur });
+      return { html, fromCache: false, finalUrl: cur };
     } catch (e) { lastErr = e; }
   }
   throw lastErr;

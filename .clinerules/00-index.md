@@ -39,6 +39,7 @@
 | 批量导入点位（5A/4A/景区/文保/门店等） | `.agents/skills/ai-import-geo-markers/SKILL.md` |
 | 删除数据 / 回收站 / 恢复 / 清理 | `.agents/skills/ai-recycle-bin-ops/SKILL.md` |
 | 创建或更新 skill | `.webcode/builtin-skills/create-skills/SKILL.md` |
+| **执行 npm run crawl（全网抓取）前** | `.agents/references/crawl-security.md`（安全策略 + AI 8 条硬规矩） |
 
 加载方式：用 read_file 读取对应文件后，再按其中流程执行，不要凭记忆操作。
 
