@@ -99,6 +99,29 @@
         @dblclick="handleEditorDblClick"
       ></div>
 
+      <!-- 👍 点赞 / 👎 倒赞
+           🚨 限制：**每打开一次富文本编辑器，各限 1 次**（会话级锁 sessionLiked/sessionDisliked）。
+              面板关闭即组件卸载 ⇒ 状态归零；重新打开 = 新一轮，各可再点 1 次。
+              两枚按钮互不干扰：同一次打开可各点 1 次（like 1 + dislike 1）。
+           计数按「图形身份编码」持久化（reactionStore.js → meta 表 key `graphic:${fileId}_${annotationId}`），
+              与 documents 表同源，天然与图形捆绑，且后续新功能可往同一条记录加字段。 -->
+      <div class="doc-reactions">
+        <button
+          class="reaction-btn like-btn"
+          :class="{ active: sessionLiked }"
+          :disabled="sessionLiked"
+          :title="sessionLiked ? '本次打开已点赞' : '点赞（每打开一次限 1 次）'"
+          @click="handleReact('like')"
+        >👍 点赞<span class="reaction-count">{{ likeCount }}</span></button>
+        <button
+          class="reaction-btn dislike-btn"
+          :class="{ active: sessionDisliked }"
+          :disabled="sessionDisliked"
+          :title="sessionDisliked ? '本次打开已倒赞' : '倒赞（每打开一次限 1 次）'"
+          @click="handleReact('dislike')"
+        >👎 倒赞<span class="reaction-count">{{ dislikeCount }}</span></button>
+      </div>
+
       <!-- 底部操作区 -->
       <div class="doc-actions">
         <div class="doc-footer-info">
@@ -138,6 +161,8 @@
 <script setup>
 import { ref, watch, nextTick, onBeforeUnmount, computed } from 'vue';
 import { saveDocument, getDocument } from '../../../../groups/geo/utils/documentStore.js';
+// 👍 图形附带数据（点赞/倒赞）：与 documents 同源身份编码，挂在 meta 表的通用容器里
+import { getReactions, bumpReaction } from '../../../../groups/geo/utils/reactionStore.js';
 import { MARKER_ICONS } from '../../../../groups/geo/utils/markerIcons.js';
 
 const props = defineProps({
@@ -158,6 +183,12 @@ const docEditorRef = ref(null);
 const localTitle = ref('');
 const isStyleExpanded = ref(false);
 const localStyle = ref({ color: '#3388ff', fillColor: '#3388ff', fillOpacity: 0.2, weight: 3, iconType: 0, iconSize: 32 });
+
+// 👍 点赞 / 倒赞：累计计数 + 本次会话锁（每打开一次各限 1 次）
+const likeCount = ref(0);
+const dislikeCount = ref(0);
+const sessionLiked = ref(false);
+const sessionDisliked = ref(false);
 const showSaveToast = ref(false);
 
 // 图片预览状态
@@ -220,6 +251,19 @@ watch(() => props.node, async (newNode, oldNode) => {
     nextTick(() => {
       setEditorContent(initialHtml);
     });
+
+    // 👍 反应计数：重置本次会话锁（=「每打开一次各限 1 次」）+ 从库读取累计值
+    sessionLiked.value = false;
+    sessionDisliked.value = false;
+    try {
+      const rc = await getReactions(toolId, props.fileId, nodeId);
+      likeCount.value = rc.like;
+      dislikeCount.value = rc.dislike;
+    } catch (e) {
+      console.warn('[MarkerDocPanel] 读取点赞/倒赞计数失败:', e);
+      likeCount.value = 0;
+      dislikeCount.value = 0;
+    }
   }
 }, { immediate: true });
 
@@ -304,6 +348,30 @@ const closePreview = () => {
   translateY.value = 0;
 };
 
+// 👍 点赞 / 倒赞点击处理
+//   规则：本次打开面板，like / dislike 各限 1 次（互不干扰）。
+//   失败时回滚会话锁，允许用户重试（避免「点了没记上还锁死」）。
+const handleReact = async (type) => {
+  if (!props.node) return;
+  if (type === 'like' && sessionLiked.value) return;
+  if (type === 'dislike' && sessionDisliked.value) return;
+
+  if (type === 'like') sessionLiked.value = true;
+  else sessionDisliked.value = true;
+
+  try {
+    const rc = await bumpReaction(props.toolId, props.fileId, props.node.id, type);
+    if (rc) {
+      likeCount.value = Number(rc.like) || 0;
+      dislikeCount.value = Number(rc.dislike) || 0;
+    }
+  } catch (e) {
+    console.warn('[MarkerDocPanel] 写入点赞/倒赞失败:', e);
+    if (type === 'like') sessionLiked.value = false;
+    else sessionDisliked.value = false;
+  }
+};
+
 const handleSave = async (silent = false) => {
   if (docEditorRef.value && props.node) {
     const nodeId = props.node.id;
@@ -377,6 +445,16 @@ const handleExportDocx = () => {
 .doc-editor:empty:focus::before { content: ""; }
 .doc-editor :deep(img) { max-width: 100% !important; height: auto !important; display: block; margin: 8px 0; border-radius: 4px; cursor: zoom-in; box-sizing: border-box; user-select: none; }
 .doc-actions { background: #f8f9fa; border-top: 1px solid #ddd; padding: 10px 15px; display: flex; flex-direction: column; gap: 10px; }
+/* 👍 点赞 / 倒赞区（底部，位于操作按钮上方） */
+.doc-reactions { display: flex; align-items: center; gap: 10px; padding: 8px 0; margin-bottom: 8px; border-top: 1px solid #eee; border-bottom: 1px solid #eee; }
+.reaction-btn { display: inline-flex; align-items: center; gap: 4px; padding: 4px 12px; font-size: 12px; border-radius: 14px; border: 1px solid #ddd; background: #f7f7f7; color: #555; cursor: pointer; transition: 0.15s; }
+.reaction-btn:hover:not(:disabled) { background: #e6f7ff; border-color: #91d5ff; color: #1890ff; }
+.reaction-btn:disabled { cursor: not-allowed; opacity: 0.55; }
+.reaction-btn.active { font-weight: bold; }
+.like-btn.active { background: #e6f7ff; border-color: #1890ff; color: #1890ff; }
+.dislike-btn.active { background: #fff1f0; border-color: #ff7875; color: #cf1322; }
+.reaction-count { display: inline-block; min-width: 16px; text-align: center; font-weight: bold; }
+
 .doc-footer-info { font-size: 11px; color: #666; }
 .doc-footer-info p { margin: 2px 0; }
 .action-buttons { display: flex; gap: 10px; }
