@@ -27,6 +27,20 @@
 - **子命令**：`build <draft.json> [--dry-run]` / `geocode "<地址>"` / `check <file.json>`
 - **效果**：单轮采集从 ~6 次往返降到 **~3 次**（写草稿 → 跑 build → 提交）
 
+### 0.0.1 ★ extract 全自动链路（2026-10-07 新增，对应优化项 C3）
+
+对**结构化列表页**（如 chinamarathon.com），可跳过「手工写草稿」这一步：
+
+    npm run extract -- --url=<列表页> --month=YYYY-MM --out=.cache/collect/_draft.json
+    npm run collect -- build .cache/collect/_draft.json
+
+- `extract`：抓取列表页 → 解析「名称/日期/地点」三元组 → 生成 collect 草稿
+- **复用 `crawl/lib.mjs` 的 fetchText**（带缓存+重试），不要自己写 fetch（直连会失败）
+- 生成的是**骨架简介**（基于真实元数据，约 233 字，不编造任何事实），AI 可再按需充实
+- 适用：SSR 列表页；JS 渲染页仍需浏览器兜底
+
+**全自动链路**：`extract（列表页→草稿）→ build（编码→契约→写入）`，全程 2 条命令。
+
 ### 0.1 浏览器采集（仅当 collect 无法覆盖时才用）
 
 - **坐标查询**：一律用页面内 `AMap.PlaceSearch`，**一次 `evaluate_script` 查一批（10-20 个）**。

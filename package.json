@@ -16,7 +16,8 @@
     "integrity": "node scripts/integrity.mjs",
     "backup": "node scripts/backup.mjs",
     "data-ops": "node scripts/data-ops.mjs",
-    "collect": "node scripts/collect/index.mjs"
+    "collect": "node scripts/collect/index.mjs",
+    "extract": "node scripts/collect/extract.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.1",
