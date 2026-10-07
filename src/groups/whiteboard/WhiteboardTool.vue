@@ -83,6 +83,7 @@
           @locate="whiteboardLocate"
           @add-group="handleWbAddGroup"
           @remove-group="handleWbRemoveGroup"
+          @rename-group="handleWbRenameGroup"
           @update-layer-group="handleWbUpdateGroup"
           @delete-layer="handleWbDeleteElement"
           @filter-group="handleWbFilterGroup"
@@ -912,6 +913,61 @@ const handleWbAddGroup = (name) => {
 // ===== [SECTION:handleWbRemoveGroup] =====
 const handleWbRemoveGroup = (name) => {
   console.debug('[白板面板] remove-group:', name);
+};
+
+/**
+ * 分组改名（白板侧）：把该组内**全部**画布元素的 customData.group 改成新名。
+ *
+ * 【载荷形态】LayerListPanel emit('rename-group', { oldName, newName })
+ *
+ * 【与 handleWbUpdateGroup 的关系】
+ *   后者是「单个元素改组」，本函数是「整组改名」——
+ *   二者共用同一条落地链：customData.group →（800ms 防抖）runSync → annotations.group。
+ *   故此处同样**不手动调 runSync**（避免在唯一入口外另开入口），
+ *   批量改完只调一次 updateScene + refreshRegisteredList()。
+ *
+ * 【为什么批量合并成一次 updateScene】
+ *   逐个 updateScene 会触发 N 次 onChange → N 次防抖重排，且 undo 栈被拆成 N 步。
+ *   合并成一次 = 一次重绘 + 一条 undo 记录。
+ */
+// ===== [SECTION:handleWbRenameGroup] =====
+const handleWbRenameGroup = ({ oldName, newName }) => {
+  const trimmed = (newName == null ? '' : String(newName)).trim();
+  if (!oldName || !trimmed || trimmed === oldName) return;
+
+  // 只处理「有对应画布元素」的组内成员（无 wbElementId 者本就无法在画布上改名）
+  const targets = wbPanelLayers.value.filter(l => (l.group || '默认') === oldName);
+  const idMap = new Map();
+  targets.forEach(l => { if (l.wbElementId) idMap.set(l.wbElementId, l); });
+  if (idMap.size === 0) return;
+
+  const el = boardRef.value?.getApi?.() || api.value;
+  if (!el || typeof el.getSceneElements !== 'function' || typeof el.updateScene !== 'function') {
+    console.warn('[白板面板] 改分组名失败：画布 API 未就绪');
+    return;
+  }
+
+  const current = el.getSceneElements();
+  let changed = 0;
+  const next = current.map(e => {
+    if (!e || !idMap.has(e.id)) return e;
+    const item = idMap.get(e.id);
+    const nextCustom = {
+      ...(e.customData || {}),
+      // customData 只镜像 { name, group }（与 handleWbUpdateGroup 同约束）
+      name: (e.customData && e.customData.name) || item.title || item.objectName || '',
+      group: trimmed
+    };
+    changed++;
+    // ⚠️ mutateElement（MEMO R5）：只改引用、不触发重绘，故必须紧跟 updateScene
+    return mutateElement(e, { customData: nextCustom });
+  });
+  if (changed === 0) return;
+
+  el.updateScene({ elements: next, captureUpdate: CaptureUpdateAction.IMMEDIATELY });
+
+  // 列表立刻反映（只读库、不写库 → 不构成第二个写入口）
+  refreshRegisteredList();
 };
 
 /**

@@ -33,6 +33,7 @@
       @locate="$emit('locate', $event)"
       @add-group="$emit('add-group', $event)"
       @remove-group="$emit('remove-group', $event)"
+      @rename-group="$emit('rename-group', $event)"
       @update-layer-group="$emit('update-layer-group', $event)"
       @delete-layer="$emit('delete-layer', $event)"
       @filter-group="$emit('filter-group', $event)"
@@ -71,6 +72,7 @@ defineEmits([
   'locate',
   'add-group',
   'remove-group',
+  'rename-group',
   'update-layer-group',
   'delete-layer',
   'filter-group',

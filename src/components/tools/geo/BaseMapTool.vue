@@ -73,6 +73,7 @@
           @locate="flyToLayer"
           @add-group="handleAddGroup"
           @remove-group="handleRemoveGroup"
+          @rename-group="handleRenameGroup"
           @update-layer-group="handleUpdateLayerGroup"
           @delete-layer="handleSoftDeleteLayer"
           @filter-group="handleFilterGroup"
@@ -975,6 +976,37 @@ const handleRemoveGroup = (groupName) => {
   if (hasChange) {
     forceAutoSave();
   }
+};
+
+// 🚨 分组改名：同步到该分组内**全部**数据（annotations.group）
+// 载荷形态：LayerListPanel emit('rename-group', { oldName, newName })
+// ⚠️ 与 update-layer-group 的 `{ id, group }` 形态不同，不可互换处理。
+// ⚠️ 分组列表在加载时由 annotations.group 重建（见 loadHistoricalLayers），
+//    故只要把组内每条 layer.group 改掉 + forceAutoSave，分组名即持久化。
+// ===== [SECTION:handleRenameGroup] =====
+const handleRenameGroup = ({ oldName, newName }) => {
+  if (!oldName || !newName) return;
+  const trimmed = String(newName).trim();
+  if (!trimmed || trimmed === oldName) return;
+  if (groups.value.find(g => g.name === trimmed)) {
+    window.alert(`分组「${trimmed}」已存在，请换一个名称`);
+    return;
+  }
+  const target = groups.value.find(g => g.name === oldName);
+  if (!target) return;
+  target.name = trimmed;
+
+  let hasChange = false;
+  drawnLayers.value.forEach(layer => {
+    if ((layer.group || '默认') === oldName) {
+      layer.group = trimmed;
+      hasChange = true;
+    }
+  });
+  if (hasChange) forceAutoSave();
+
+  // 若当前正在按旧组名过滤 → 切到新组名，保持「下拉 ↔ 画布」一致
+  if (currentView.value === oldName) applyDisplayForView(trimmed);
 };
 
 // ===== [SECTION:handleTitleUpdate] =====

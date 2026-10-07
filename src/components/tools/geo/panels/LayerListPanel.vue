@@ -103,7 +103,18 @@
               >
                 <span class="g-name">
                   <span class="arrow">{{ expandedGroup === g ? '▼' : '▶' }}</span>
-                  {{ g }}
+                  <!-- 🚨 分组改名：行内编辑态（仅非预设分组可进入） -->
+                  <input
+                    v-if="renamingGroup === g"
+                    :ref="(el) => { renameInputEl = el; }"
+                    class="g-rename-input"
+                    v-model="renameValue"
+                    @click.stop
+                    @keyup.enter.stop="confirmRename(g)"
+                    @keyup.esc.stop="cancelRename"
+                    @blur="confirmRename(g)"
+                  />
+                  <template v-else>{{ g }}</template>
                 </span>
                 <span class="g-count">{{ countByGroup(g) }}</span>
                 <span class="g-actions">
@@ -113,6 +124,7 @@
                     :title="isAiAllowed(g) ? 'AI 已获删除权限，点击撤销' : '授予 AI 删除权限'"
                     @click.stop="toggleAiPermission(g)"
                   >🤖{{ isAiAllowed(g) ? '✓' : '' }}</button>
+                  <button v-if="!isPresetGroup(g) && renamingGroup !== g" @click.stop="startRename(g)" class="rename-btn" title="修改分组名称（同步到组内全部数据）">改名</button>
                   <button v-if="!isPresetGroup(g)" @click.stop="removeGroup(g)" class="del-btn" title="删除分组">删除</button>
                 </span>
               </li>
@@ -172,7 +184,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, nextTick } from 'vue';
 
 const props = defineProps({
   layers: { type: Array, default: () => [] },
@@ -187,7 +199,7 @@ const props = defineProps({
   //   白板侧：无显示窗口、无轮换（不传 displayIds / 不启动定时器）→ 传 true，避免文案说谎
   hideWindowHint: { type: Boolean, default: false }
 });
-const emit = defineEmits(['locate', 'add-group', 'remove-group', 'update-layer-group', 'delete-layer', 'filter-group', 'refresh-hotspot']);
+const emit = defineEmits(['locate', 'add-group', 'remove-group', 'rename-group', 'update-layer-group', 'delete-layer', 'filter-group', 'refresh-hotspot']);
 
 const PRESET_GROUPS = ['默认', '5A级景区', '中国4A级景区'];
 const isPresetGroup = (name) => PRESET_GROUPS.includes(name);
@@ -227,6 +239,13 @@ const isEditGroupOpen = ref(false);
 const newGroupName = ref('');
 const expandedGroup = ref('');
 
+// 🚨 分组改名：行内编辑态
+const renamingGroup = ref('');
+const renameValue = ref('');
+// ⚠️ 不能用 ref 变量：它位于 v-for 内，Vue 3 会把模板 ref 收成数组 → .focus() 失效。
+//   改用函数 ref 存到普通变量，拿到的一定是当前渲染的那个 input 元素。
+let renameInputEl = null;
+
 // 🚨 AI 删除权限白名单（localStorage 持久化）
 const AI_PERM_KEY = 'geo_group_ai_delete_perms';
 const aiPermGroups = ref(JSON.parse(localStorage.getItem(AI_PERM_KEY) || '[]'));
@@ -258,6 +277,39 @@ const toggleExpand = (g) => {
 };
 
 const openEditGroupModal = () => { isEditGroupOpen.value = true; };
+
+// 🚨 分组改名：进入编辑态（自动聚焦 + 全选）
+const startRename = async (g) => {
+  renamingGroup.value = g;
+  renameValue.value = g;
+  await nextTick();
+  if (renameInputEl && typeof renameInputEl.focus === 'function') {
+    renameInputEl.focus();
+    renameInputEl.select();
+  }
+};
+
+const cancelRename = () => {
+  renamingGroup.value = '';
+  renameValue.value = '';
+};
+
+// 🚨 确认改名：enter 与 blur 会双触发，用「编辑态是否仍是该组」做幂等保护
+const confirmRename = (oldName) => {
+  if (renamingGroup.value !== oldName) return;
+  const next = renameValue.value.trim();
+  renamingGroup.value = '';
+  renameValue.value = '';
+  if (!next || next === oldName) return;
+  if (allGroups.value.includes(next)) {
+    window.alert(`分组「${next}」已存在，请换一个名称`);
+    return;
+  }
+  // 保持本组件内的选中/筛选项与改名同步，避免下拉值悬空
+  if (expandedGroup.value === oldName) expandedGroup.value = next;
+  if (activeGroupFilter.value === oldName) activeGroupFilter.value = next;
+  emit('rename-group', { oldName, newName: next });
+};
 
 const addGroup = () => {
   const name = newGroupName.value.trim();
@@ -446,6 +498,9 @@ const goToFavorite = (item) => {
 .ai-perm-btn { border: 1px solid #d8b4fe; background: #fff; color: #7c3aed; border-radius: 3px; cursor: pointer; font-size: 11px; padding: 1px 5px; }
 .ai-perm-btn.on { background: #7c3aed; color: #fff; border-color: #7c3aed; }
 .del-btn { background: none; border: none; color: #e74c3c; cursor: pointer; font-size: 11px; }
+.rename-btn { background: none; border: none; color: #1890ff; cursor: pointer; font-size: 11px; }
+.rename-btn:hover { text-decoration: underline; }
+.g-rename-input { flex: 1; min-width: 60px; padding: 1px 4px; font-size: 12px; border: 1px solid #1890ff; border-radius: 3px; outline: none; box-sizing: border-box; }
 
 .member-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: bold; color: #333; padding-bottom: 8px; border-bottom: 1px solid #eee; margin-bottom: 6px; }
 .ai-tag { font-size: 10px; color: #7c3aed; font-weight: normal; }
