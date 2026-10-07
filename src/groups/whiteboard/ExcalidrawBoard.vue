@@ -18,7 +18,7 @@ const props = defineProps({
   uiOptions: { type: Object, default: () => ({}) }
 });
 
-const emit = defineEmits(['change', 'api-ready']);
+const emit = defineEmits(['change', 'api-ready', 'selection-change']);
 
 const host = ref(null);
 let instance = null;
@@ -26,6 +26,11 @@ let api = null;
 // 🚨【防御层 3b】watch 在 api 未就绪时不再直接 return（旧代码会永久丢弃这次变更），
 //   改为打标记，等 onApiReady 里补执行。
 let sceneDirty = false;
+// 🚨【P1-B 新增】上一次抛出的选中集合签名（见 onChange 内注释）。
+//   为什么用「签名比对」而不是深比较数组：onChange 每次拖拽都会触发，
+//   而 appState.selectedElementIds 的对象引用每次都是新的 →
+//   直接比较引用必然不等 → 会陷入「每帧都 emit」的性能坑。
+let lastSelectionSig = null;
 
 /**
  * 🛡️【C 方案 · 最后一道防线】把任意来源的元素数组净化成「可安全渲染」的数组。
@@ -75,6 +80,19 @@ onMounted(() => {
     },
     onChange: (elements, appState) => {
       emit('change', elements, appState);
+      // 🚨【P1-B 新增】选中集合变化 → 向上抛 id 数组。
+      //   来源：appState.selectedElementIds 形如 { 'elId': true, 'elId2': false }
+      //   ⇒ 只取值为 true 的键（Excalidraw 会保留取消选中的键，值置 false 而非删除）。
+      //   ⚠️ 用「join 成签名再比对」做去重：onChange 在拖拽/绘制期间高频触发，
+      //      选中集合没变时必须**不 emit**，否则下游面板会被反复重挂（内容闪烁 + 丢焦点）。
+      //      不用直接比较数组引用 —— appState 每次都是新对象，引用必然不等，等于没去重。
+      //      （不排序：Excalidraw 的 selectedElementIds 键序稳定，同一集合得到同一签名。）
+      const sel = (appState && appState.selectedElementIds) || {};
+      const ids = Object.keys(sel).filter(k => sel[k]);
+      const sig = ids.join('|');
+      if (sig === lastSelectionSig) return;
+      lastSelectionSig = sig;
+      emit('selection-change', ids);
     }
   });
 });

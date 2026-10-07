@@ -48,6 +48,7 @@
                 :ui-options="uiOptions"
                 @api-ready="handleApiReady"
                 @change="handleChange"
+                @selection-change="handleSelectionChange"
               />
             </template>
             <template #fallback>
@@ -92,6 +93,26 @@
           :tool-id="WB_TOOL_ID"
           :file-id="safeFileId()"
           @imported="handleWbAiImported"
+        />
+
+        <!-- 📝【P1-B 新增】画布选中元素 → 富文本编辑面板
+             🚨 插入点与 WhiteboardPanels 同理，必须在 .wb-canvas-wrap 内、
+                与 v-if="boardReady" 同级：
+                  ① 它是最近的 positioned 祖先（.wb-canvas-wrap { position:relative }）
+                     ⇒ MarkerDocPanel 的 .doc-panel { position:absolute; top:15px; right:15px }
+                        落成「画布右上角浮层」，与地图侧视觉一致，且不遮顶栏（本组件在画布区内）。
+                  ② 放进 v-if 内会被 boardReady 延后；与它同级则首帧即可存在。
+             🚨 hide-style-panel：白板元素 type 是 wb- 前缀，样式项必然全空 → 整体隐藏。
+             ⚠️ node 只在「选中的元素能反查到 annotation」时才非空 ——
+                未登记元素（防抖窗内刚画的）与空白处点选都不显示面板，避免拿脏 node 去写库。 -->
+        <MarkerDocPanel
+          v-if="currentDocNode"
+          :node="currentDocNode"
+          :tool-id="WB_TOOL_ID"
+          :file-id="safeFileId()"
+          :hide-style-panel="true"
+          @close="handleDocPanelClose"
+          @update:title="handleDocTitleUpdate"
         />
       </div>
 
@@ -161,6 +182,13 @@ import WhiteboardPanels from './WhiteboardPanels.vue';
 //   面板依赖 MapPanel/图表等一堆东西，没必要进首屏）。
 const AiImportPanel = defineAsyncComponent(
   () => import('../../components/tools/geo/panels/AiImportPanel.vue')
+);
+// 📝【P1-B】富文本编辑面板：与 AiImportPanel 同理懒加载。
+//   ⚠️ 路径核对：WhiteboardTool.vue 在 src/groups/whiteboard/，
+//      面板在 src/components/tools/geo/panels/ ⇒ 上溯两级到 src/components ✓
+//      （与 AiImportPanel 同为 components 子树，故前缀一致）
+const MarkerDocPanel = defineAsyncComponent(
+  () => import('../../components/tools/geo/panels/MarkerDocPanel.vue')
 );
 // 🤖【P1-A】记录 → 画布元素生成器（AI 导入后让画布立刻出现对应文字元素）
 import { recordToElement } from './utils/recordToElement.js';
@@ -237,6 +265,9 @@ const armCanvasReady = (reason) => {
 
 const stats = reactive({ total: 0, registered: 0, skipped: 0 });
 const registeredList = ref([]);
+// 📝【P1-B】当前富文本面板绑定的节点（annotation 形状：id / type / title / lat / lng）。
+//   null = 面板不渲染。由 handleSelectionChange 维护（画布点选 / 清空选中）。
+const currentDocNode = ref(null);
 
 // 🧩 块 3：白板 P0 面板包装组件 ref（用于「画布点选 → 信息栏联动」）
 const wbPanelsRef = ref(null);
@@ -668,6 +699,84 @@ const syncSelectedToInfoPanel = (appState) => {
   const layer = wbPanelLayers.value.find(l => l.wbElementId === firstId);
   if (!layer) return;
   wbPanelsRef.value.selectLayer(layer);
+};
+
+/**
+ * 画布选中 → 富文本面板（P1-B 新增）
+ *
+ * 【数据链】（与 syncSelectedToInfoPanel 完全同源，只多一层 annotation 反查）
+ *   ExcalidrawBoard onChange → appState.selectedElementIds
+ *     → emit('selection-change', ids)（子组件内已做签名去重，见 ExcalidrawBoard.vue）
+ *     → 此处取第一个 id（多选取第一个，与信息栏联动保持一致）
+ *     → 用 wbElementId 反查 registeredList（annotations 全量记录）
+ *     → 把 annotation 转成 MarkerDocPanel 需要的 node 形状
+ *     → MarkerDocPanel 内部 getDocument(WB_TOOL_ID, fileId, node.id) 读富文本
+ *
+ * 【🚨 边界：清空选中时**必须**关面板】
+ *   与信息栏（有意保留上次内容）不同：富文本面板是**编辑器**，若选中清空后仍留在屏幕上，
+ *   用户会误以为还在编辑原元素；且 onBeforeUnmount 的兜底保存会对着旧 node 再写一次。
+ *   故此处 ids 为空 ⇒ currentDocNode = null ⇒ v-if 卸载（卸载时会自动兜底保存，符合预期）。
+ *
+ * 【🚨 为什么 node.id 传 annotation id（WB.xxxxx）而不是画布 nanoid】
+ *   documents 表的键是 (toolId, fileId, nodeId)，而地图侧写入用的就是 annotation id
+ *   （saveAllLayers 的 layer.id）。白板要「打开信息数据库 → 点详情 → 看到同一份富文本」，
+ *   必须共用同一把键 ⇒ 一律用 WB.xxxxx。画布 nanoid 只是桥（wbElementId）。
+ *
+ * 【🚨 为什么 node.type 传 annotation.type（wb-text / wb-rectangle）】
+ *   1) 面板的样式块已由 hide-style-panel 隐藏，type 不再驱动样式分支 → 传什么都不影响 UI；
+ *   2) 但底部「类型：xxx」信息行会展示它，传 annotation.type 与信息数据库显示一致；
+ *   3) 绝不能传画布侧 type（rectangle/text 无 wb- 前缀会破坏红线「白板元素 type 必带 wb-」）。
+ */
+const handleSelectionChange = (ids) => {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    currentDocNode.value = null;
+    return;
+  }
+  const firstId = ids[0];
+  // 🔑 wbElementId 桥接：registeredList 来自 annotations 表，其中 wbElementId 恒等于画布元素 id
+  const anno = registeredList.value.find(item => item && item.wbElementId === firstId);
+  if (!anno) {
+    // 未登记元素（例：刚画出、还在 800ms 防抖窗内）→ 不显示面板。
+    // 不报错、不清空：保持与信息栏一致，等 runSync 登记后再点即出现。
+    return;
+  }
+  const next = {
+    id: anno.id,                      // annotation id（WB.xxxxx）—— documents 表的键
+    type: anno.type,                  // 白板 annotation type（wb-text / wb-rectangle…）
+    title: anno.objectName || anno.title || '',
+    docHtml: anno.docHtml || '',      // 兜底：documents 表无记录时面板用这个
+    lat: anno.lat,
+    lng: anno.lng
+  };
+  // 同元素不重设：避免 MarkerDocPanel 的 watch(props.node) 因新对象而重跑
+  //（重跑会「先保存旧 node 再读新 node」，同 id 时虽无副作用，但会多做一次 IO）
+  if (currentDocNode.value && currentDocNode.value.id === next.id) {
+    // 但标题可能在别处被改过（如信息栏改名）→ 就地同步可变字段，不换对象引用
+    currentDocNode.value.title = next.title;
+    return;
+  }
+  currentDocNode.value = next;
+};
+
+/** 面板右上角 ✕ → 关闭（不取消选中，下次点选同一元素仍会因 handleSelectionChange 重开） */
+const handleDocPanelClose = () => {
+  currentDocNode.value = null;
+};
+
+/**
+ * 面板标题变更 → 同步到 registeredList 的本地副本（**不写库**）
+ *
+ * 【为什么不写库】与 handleWbLayerUpdate 同一裁决：字段持久化的唯一链路是
+ *   runSync → elementSync（含指纹去重）。这里直接写 annotations 会形成第二个写入口，
+ *   且绕过指纹去重。标题的落库由下一次 runSync 通过 customData 镜像完成。
+ * 【为什么只改本地副本】让「信息数据库 / 图形列表」在本轮刷新前也显示新名字，
+ *   属于纯 UI 补齐；下次 refreshRegisteredList() 会从库读回权威值并覆盖。
+ */
+const handleDocTitleUpdate = (payload) => {
+  if (!payload || !payload.id) return;
+  const target = registeredList.value.find(item => item && item.id === payload.id);
+  if (target) target.objectName = payload.title;
+  console.debug('[白板面板] 富文本标题已改（本地，等 runSync 落库）:', payload.id, '→', payload.title);
 };
 
 /**

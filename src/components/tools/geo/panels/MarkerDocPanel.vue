@@ -11,8 +11,12 @@
         <input type="text" v-model="localTitle" placeholder="请输入文档名称" class="title-input" />
       </div>
 
-      <!-- 样式面板（默认折叠） -->
-      <div class="style-panel">
+      <!-- 样式面板（默认折叠）
+           🚨【P1-B 新增】hideStylePanel 默认 false ⇒ 地图 6 个工具的调用点一行未改、行为不变。
+              白板侧传 true：白板元素 type 一律 wb- 前缀（如 wb-rectangle），
+              而本面板的样式项由 node.type 驱动分支（marker / polygon / rectangle…），
+              直接渲染会得到一排空样式项 ⇒ 白板场景下整体隐藏更干净。 -->
+      <div v-if="!hideStylePanel" class="style-panel">
         <div class="style-header" @click="isStyleExpanded = !isStyleExpanded">
           <span>🎨 图形样式</span>
           <span class="toggle-icon">{{ isStyleExpanded ? '▼' : '▶' }}</span>
@@ -139,7 +143,12 @@ import { MARKER_ICONS } from '../../../../groups/geo/utils/markerIcons.js';
 const props = defineProps({
   node: { type: Object, default: null },
   toolId: { type: String, default: 'default' },
-  fileId: { type: String, default: 'default-file' } // 🚨 新增：接收文件编号
+  fileId: { type: String, default: 'default-file' }, // 🚨 接收文件编号
+  // 🚨【P1-B 新增】隐藏「🎨 图形样式」块。
+  //   默认 false ⇒ 地图侧 6 个工具的调用点无需改动，行为与之前完全一致；
+  //   白板侧传 true（白板元素的 wb- 前缀 type 不匹配本面板的样式分支，样式项必然全空）。
+  //   ⚠️ 只影响样式块的渲染，不影响富文本的存储路径（saveDocument 仍用 toolId + fileId + node.id）。
+  hideStylePanel: { type: Boolean, default: false }
 });
 
 const emit = defineEmits(['close', 'update:title', 'update:content', 'update:style']);
