@@ -191,7 +191,7 @@ commit `77df0ac`。**⑤ 新增坑#16**（测试替身必须对照源码）。**
 | 7 | 界面滚动修复 | `InfoDatabase.vue` / `RecycleBinModal.vue` |
 | 8 | 面板固定顶栏（inline 模式）| `MapPanel.vue`；详见 skill `geo-panel-ui-design` |
 | 9 | 层叠上下文修复 | `.tool-content` isolation + z-index；详见 skill |
-| 10 | 热点信息分组 | `enableHotspot`；localStorage `geo_hotspot_layer_ids` |
+| 10 | 热点信息分组 | `enableHotspot`；localStorage `geo_hotspot_layer_ids`；**刷新按钮按当前下拉分组刷新**（2026-10-07）|
 | 11 | 时间字段与分组联动 | `aiImporter.buildDocHtml` + `BaseMapTool.handleFilterGroup` |
 | 12 | 多 AI 协作骨架 | `.agents/references/multi-ai-collab.md` |
 | 13 | 海量数据性能优化 | `layerScheduler.js`（分块 + 60 条窗口 + 30 秒轮换）|
