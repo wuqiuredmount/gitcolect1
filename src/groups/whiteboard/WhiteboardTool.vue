@@ -21,6 +21,10 @@
         {{ ghostCleaning ? '清理中…' : '[临时调试] 清理幽灵元素' }}
       </button>
       <button class="wb-btn" @click="syncNow" :disabled="syncing">{{ syncing ? '同步中…' : '立即同步' }}</button>
+      <!-- 🤖【P1-A】AI 批量导入开关（面板内联在画布左上角） -->
+      <button class="wb-btn" :class="{ 'wb-btn-primary': showAiImportPanel }" @click="showAiImportPanel = !showAiImportPanel">
+        {{ showAiImportPanel ? '收起AI导入' : 'AI批量导入' }}
+      </button>
       <button class="wb-btn" @click="isGeoPanelOpen = !isGeoPanelOpen">
         {{ isGeoPanelOpen ? '收起范围设置' : '地理范围设置' }}
       </button>
@@ -76,6 +80,18 @@
           @delete-layer="handleWbDeleteElement"
           @filter-group="handleWbFilterGroup"
           @update-layer="handleWbLayerUpdate"
+        />
+
+        <!-- 🤖【P1-A】AI 批量导入面板（inline 模式，与 InfoPanel 同为 .wb-canvas-wrap 内的浮层）
+             ⚠️ 用 inline 内联，**不照抄地图侧的 Teleport to="#tool-header-slot"**（白板无此 slot）。
+             ℹ️ toolId 用白板自己的 WB_TOOL_ID ⇒ 导入的记录直接落进白板的信息库，
+                与地图元素共用同一套 annotations/documents 表，但 toolId 隔离互不干扰。 -->
+        <AiImportPanel
+          v-if="showAiImportPanel && boardReady"
+          inline
+          :tool-id="WB_TOOL_ID"
+          :file-id="safeFileId()"
+          @imported="handleWbAiImported"
         />
       </div>
 
@@ -141,6 +157,13 @@ import { WHITEBOARD_DEFAULTS } from '../geo/utils/toolDefaults.js';
 import { isValidBounds, isValidCanvas } from './utils/coordinate.js';
 // 🧩 块 3：白板 P0 面板（图形列表 → 顶栏；信息栏 → 画布左下角浮层）
 import WhiteboardPanels from './WhiteboardPanels.vue';
+// 🤖【P1-A】AI 批量导入面板：懒加载（与 AsyncExcalidrawBoard 同理，
+//   面板依赖 MapPanel/图表等一堆东西，没必要进首屏）。
+const AiImportPanel = defineAsyncComponent(
+  () => import('../../components/tools/geo/panels/AiImportPanel.vue')
+);
+// 🤖【P1-A】记录 → 画布元素生成器（AI 导入后让画布立刻出现对应文字元素）
+import { recordToElement } from './utils/recordToElement.js';
 // 🧩 块 4：画布侧写操作（改组 / 删除）所需的官方 API
 //   核实来源 node_modules/@excalidraw/excalidraw/dist/types/excalidraw/index.d.ts:22-23
 //     `export { mutateElement, ... } from "./element/mutateElement"`
@@ -164,6 +187,17 @@ const boardId = ref('');
 const boardName = ref(WHITEBOARD_DEFAULTS.boardName);
 const isDefaultBasis = ref(true);
 const isGeoPanelOpen = ref(false);
+// 🤖【P1-A】AI 批量导入面板开关（顶栏按钮控制）
+const showAiImportPanel = ref(false);
+// 🤖【P1-A】导入后补画布的重入锁。
+//   为什么需要：AiImportPanel 的「一键导入全部」是**逐文件 emit('imported')**，
+//   若 N 个文件就是 N 次调用；而本 handler 内含 await（读库 / rebuildIdMap / syncNow），
+//   并发进入会重复 setScene（画面闪 + 元素翻倍风险）。
+//   语义：后到的调用直接丢弃 —— 因为「读库 → 只补无 wbElementId 的记录」本身是幂等的，
+//   最后一次调用（await 结束后）读到的库一定是最全的，足以覆盖前面的缺口。
+//   ⚠️ 用「排队重跑」而非「直接丢弃」更稳：置 pending 标记，当前跑完再看是否需要补一轮。
+let wbAiImportBusy = false;
+let wbAiImportPending = false;
 
 const initialScene = ref([]);
 const initialAppState = ref({});
@@ -437,7 +471,55 @@ const runSync = async (elements) => {
     //   但 board.scene 的落库仅在 onBeforeUnmount / restoreElementsToBoard / 清理工具。
     //   本轮同步完成后，画布上的元素状态已被持久化 → 清掉脏标记，
     //   避免「改了又改回原样」之类的场景仍触发 onBeforeUnmount 的写入。
-    canvasDirty = false;
+    //
+    // 🆕【第 2 步 D 修正（2026-10-08）】上面「直接置 false」在 D 落地后**必须改为累积式**。
+    //   ❌ 旧写法 `canvasDirty = false` 的致命链（DeepSeek 指出，已复现确认）：
+    //     ① 用户删 A → runSync#1 → prunedIds=['A'] → 需置 canvasDirty=true ✅
+    //     ② runSync#1 末尾调 updateScene 剔画布元素 → **触发 onChange**（第 2 次）
+    //     ③ 800ms 后再 runSync#2 → A 已不在画布/不在 idMap → prunedIds=[] 
+    //     ④ 若此处无条件写 false ⇒ canvasDirty 被刷回 false ❌
+    //     ⑤ 用户切走 → canvasDirty=false → 走【乐观写】→ 旧快照（含 A）回灌
+    //        ⇒ **剔除结果被抹掉 ⇒ D 完全白做** 💥
+    //   ✅ 正确语义：**canvasDirty 是「画布是否与库不一致」的累积标记**——
+    //       只由「落库动作」清零，同步动作**只能标脏、不能清脏**。
+    //       （合法清零点仅剩 3 处：onMounted 加载后 / refreshDataFromDB 两处回灌后）
+    //   ⚠️ 绝不可改回 `canvasDirty = false` / `canvasDirty = prunedIds.length > 0`。
+    if ((result.prunedIds || []).length > 0) {
+      canvasDirty = true;
+    }
+
+    // 🆕【第 2 步 D · 让画布与回收站收敛】把本轮「已完整入档」的元素从**画布内存**剔除。
+    //   为什么必须在这里剔（不能只在 elementSync 里剔）：
+    //     syncScene 是纯数据层函数，拿不到画布 API（详见 elementSync.js D 块注释）。
+    //   为什么用 getApi().updateScene 而不是 setScene()：
+    //     · setScene → applyScene 会**一并重放 appState** + 全量 toSafeElements 净化 + 整体替换
+    //     · 我们只想「减掉几个元素」⇒ updateScene({elements}) 精准且不动 appState
+    //     · 与 excalidrawBridge.js:261（applyScene 内部）**完全同一用法**，本项目已验证
+    //   ⚠️ 从 api.getSceneElements()【实况】过滤，**不用 list** ——
+    //     list 是本轮 runSync 的**入口快照**，期间用户可能又新增了元素；
+    //     用实况读出的最准，杜绝误删并发新增的元素。
+    //   ⚠️ updateScene 会**回抛 onChange** ⇒ 再触发一次防抖 runSync（此时 prunedIds=[] 自然收敛）
+    //     ⇒ 上面的累积式 canvasDirty 正是为此而设，**两条修正互相咬合，缺一不可**。
+    //   ⚠️ 白名单剔除：只剔 prunedIds 里的 id，**绝不** blanket filter(e => !e.isDeleted)。
+    if (Array.isArray(result.prunedIds) && result.prunedIds.length > 0) {
+      try {
+        const api = boardRef.value?.getApi ? boardRef.value.getApi() : null;
+        if (api && typeof api.getSceneElements === 'function' && typeof api.updateScene === 'function') {
+          const drop = new Set(result.prunedIds);
+          const before = api.getSceneElements();
+          const next = before.filter(e => !(e && drop.has(e.id)));
+          if (next.length < before.length) {
+            api.updateScene({ elements: next });
+            console.log(`[WhiteboardTool] D：已从画布剔除 ${before.length - next.length} 个已归档元素（${before.length} → ${next.length}）`);
+          }
+        } else {
+          console.warn('[WhiteboardTool] D：画布 API 不可用，跳过剔除（画布保留残留，不影响数据安全）');
+        }
+      } catch (e) {
+        // 剔除失败不影响数据安全（元素已入档；只是画布多留了几个 isDeleted 残影）
+        console.warn('[WhiteboardTool] D：剔除画布元素失败（已忽略）:', e);
+      }
+    }
     await refreshRegisteredList();
   } catch (e) {
     console.error('[WhiteboardTool] 元素同步失败:', e);
@@ -1200,6 +1282,95 @@ const refreshDataFromDB = async () => {
     canvasDirty = false;
   } catch (e) {
     console.warn('[WhiteboardTool] 刷新数据失败:', e);
+  }
+};
+
+// 🤖【P1-A】AI 批量导入完成后的处理：把库里的新记录变成画布上的文字元素。
+//
+// 【为什么需要这一步】aiImporter 只负责写 annotations（数据层），
+//   白板画布不会自动出现新元素 —— 必须有人「记录 → 元素」地补上，
+//   否则用户导入了却看不到任何东西（数据与画面脱节）。
+//
+// 【执行顺序（不可颠倒，理由逐条）】
+//   ① 读回 annotations（含刚导入的）→ 这是生成元素的**唯一数据源**
+//   ② 算出已有元素 id 集合 → 用于**只补新增**，不重建已有元素（避免画面闪烁 + 丢选中态）
+//   ③ recordToElement 逐条生成 + 过滤 null（坏元素在生成器里已被 validateElement 拦掉）
+//   ④ setScene([...当前, ...新增]) → 整体替换画布
+//   ⑤ rebuildIdMap → 让新元素立刻有编号映射（否则下次 runSync 会重复登记）
+//
+// 【为什么不走 syncScene / runSync】
+//   runSync 的方向是「画布 → 库」，AI 导入的方向是「库 → 画布」，两者语义相反。
+//   走 runSync 会先把画布里的新元素当「未登记」再登记一遍，产生重复记录。
+//
+// 【为什么 setScene 而非 updateScene】
+//   这里是**追加**元素（画布内容会整体变化），且需要 initialScene 同步更新，
+//   避免后续 watch(initialScene) 或回灌时把 AI 元素覆盖掉。
+//   ⚠️ setScene 会触发一次 onChange 回抛 → 交给既有闸门③/防抖处理，无需特殊干预。
+const handleWbAiImported = async () => {
+  // 🔒 重入保护：并发进入时只登记「还需再跑一轮」，由正在跑的那次收尾时补跑。
+  if (wbAiImportBusy) { wbAiImportPending = true; return; }
+  wbAiImportBusy = true;
+  try {
+    if (!boardRef.value || !boardRef.value.setScene) return;
+
+    // ① 读回最新记录（数据源）
+    const records = await getRegisteredElements(safeFileId());
+    if (!Array.isArray(records) || records.length === 0) return;
+
+    // ② 当前画布已有元素（用于「只补新增」，不重建已有元素 → 不闪屏、不丢选中态）
+    const api = boardRef.value.getApi ? boardRef.value.getApi() : null;
+    const current = api && typeof api.getSceneElements === 'function'
+      ? api.getSceneElements().filter(e => e && !e.isDeleted)
+      : [];
+
+    // ③ 只为「库里有、从未上过画布」的记录生成元素
+    //   · 已有 wbElementId = 此前登记过（画布存在 → 无需处理；画布缺失 → 属恢复语义，
+    //     交给回收站恢复路径处理，不在这里补，避免两条路径互相打架）
+    //   · 无经纬度 = 无法定位，跳过
+    const fresh = records.filter(r => {
+      if (!r || !Number.isFinite(Number(r.lat)) || !Number.isFinite(Number(r.lng))) return false;
+      return !r.wbElementId;
+    });
+
+    if (fresh.length === 0) {
+      console.log('[WhiteboardTool] AI 导入：无新增记录需要补画布元素');
+      return;
+    }
+
+    // ④ 生成元素（坏元素已被 recordToElement 内部拦掉）
+    const made = [];
+    for (const rec of fresh) {
+      const el = recordToElement(rec, { bounds, canvas });
+      if (el) made.push(el);
+    }
+    if (made.length === 0) {
+      console.warn(`[WhiteboardTool] AI 导入：${fresh.length} 条记录均未能生成合法元素（坐标基准或字段问题）`);
+      return;
+    }
+
+    const nextScene = [...current, ...made];
+    boardRef.value.setScene(nextScene, initialAppState.value || {});
+    initialScene.value = nextScene;          // 同步 ref，避免后续 watch/回灌覆盖
+    stats.total = nextScene.length;
+    canvasDirty = true;                      // 画布 ≠ 库（新元素尚未登记编号）→ 必须标脏
+
+    // ⑤ 重建映射 + 刷新列表
+    idMap = await rebuildIdMap(safeFileId());
+    stats.registered = idMap.size;
+    await refreshRegisteredList();
+    await syncNow();                         // 立刻登记新元素（不等 800ms 防抖）
+
+    console.log(`[WhiteboardTool] 🤖 AI 导入：已补 ${made.length} 个元素到画布` +
+      (made.length < fresh.length ? `（${fresh.length - made.length} 条未生成，见上方告警）` : ''));
+  } catch (e) {
+    console.error('[WhiteboardTool] AI 导入后补画布失败:', e);
+  } finally {
+    wbAiImportBusy = false;
+    // 期间有新导入事件积压 → 再补跑一轮（幂等：只补仍无 wbElementId 的记录）
+    if (wbAiImportPending) {
+      wbAiImportPending = false;
+      handleWbAiImported();
+    }
   }
 };
 
