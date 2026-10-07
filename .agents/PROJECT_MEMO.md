@@ -663,6 +663,26 @@ for (const tool of allToolsWithWhiteboard.value) {   // 7 库
         - 结束 `canvasDirty = true` + 立刻 `syncNow()`（新元素必须马上登记编号，不等 800ms 防抖）
 - [ ] P1.3 `ExcalidrawBoard.vue` 加 `onSelectionChange` 透出（裁决 4：白板自己的组件，允许）
 
+### 16.5 数据文件免审批通道 data-ops（2026-10-07，commit `051b22a`）
+
+**动机**：`write_file` / `edit_file` 因 `destructiveHint:true` **永远弹窗审批**（webcode 硬编码），
+数据文件（导入 JSON / 清单）的常规写入也频繁要人工确认。
+
+**实现**：新增 `scripts/data-ops.mjs`（`npm run data-ops`），脚本内硬编码安全边界。
+
+**边界（不可绕过）**：
+- ✅ 允许：`public/ai-import/**`、`public/pending-unplaced/**`
+- ❌ 拒绝：`src/**`、`.agents/**`、根配置、绝对路径、`..`、反斜杠
+- ✅ 每次写/删前自动备份 → `.cache/data-backups/`（已加 .gitignore）
+- ✅ `.json` 写入前强制 `JSON.parse` 校验
+
+**命令**：`write <relPath> <srcFile|--inline>` / `delete <relPath>` / `list <relDir>` / `restore <backupFile>`
+
+**实测**：写 ai-import ✅；写 `src/`、根配置 均 ❌ 被拒；删除自动备份 ✅。
+
+**分工约定**：代码文件 → `write_file`/`edit_file`（强制审批，不绕）；
+数据文件 → `npm run data-ops`（免审批，用户已授权，有回收站+历史库+本地备份三重兜底）。
+
 ### 16. 跨模块复用校验器时，测试断言必须读源码（2026-10-08 第 23 轮）
 
 **现象**：写 P1-A 的 `recordToElement` 验证脚本时，我内联复制了一份 `validateElement` 的规则，
