@@ -186,7 +186,7 @@ commit `77df0ac`。**⑤ 新增坑#16**（测试替身必须对照源码）。**
 | 2 | 信息回收站 | `RecycleBinModal.vue` / `recycleStore.js` / `aiDataCommand.js` |
 | 3 | 指纹系统 v4 | `fingerprint.js` / `fingerprintStore.js` |
 | 4 | 导入归档腾空 | `importHistory.js`（meta 键 `imported_ai_files`）|
-| 5 | 分组编辑增强 | `LayerListPanel.vue`（AI 删除权限开关）|
+| 5 | 分组编辑增强 | `LayerListPanel.vue`（AI 删除权限开关 + **分组改名**，2026-10-07 commit `2f83e4b`）|
 | 6 | AI 删除权限落地 | `aiDataCommand.js`（白名单约束）|
 | 7 | 界面滚动修复 | `InfoDatabase.vue` / `RecycleBinModal.vue` |
 | 8 | 面板固定顶栏（inline 模式）| `MapPanel.vue`；详见 skill `geo-panel-ui-design` |
@@ -929,6 +929,14 @@ for (const tool of allToolsWithWhiteboard.value) {   // 7 库
       → 6. 反向验证：删除后**不恢复**，刷新后仍应在回收站（不能过度修复）
 
 ---
+
+## 🆕 待实测（2026-10-07 新增功能）
+
+- [ ] **分组改名**（commit `2f83e4b`）：编辑分组窗口 → 非预设分组行「改名」按钮
+      ① 地图侧：改名 → 刷新页面 → 名称仍在 → 点开该组，组内元素分组一致
+      ② 白板侧：同上（白板分组名派生自 annotations.group）
+      ③ 反向：预设分组（默认/5A级景区/中国4A级景区）**不应出现**改名按钮
+      ④ 边界：改成已存在的组名 → 应弹提示「已存在」，不生效
 
 ## 七、每轮对话结束前 AI 必做
 
