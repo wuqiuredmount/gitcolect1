@@ -13,8 +13,10 @@
 
 1. **先读** `.agents/PROJECT_MEMO.md`（唯一记忆文件，必读，无例外）。
 2. **再读协作信箱** `.agents/mailbox/to-cline.md`
-   （若存在且非空 → 那是 DeepSeek 写给你的指令，优先处理；读完标注「（已读）」或清空，避免重复处理）。
-   通信规则详见 `.agents/references/ai-mailbox-protocol.md`（覆盖式铁律、报告格式、角色分工）。
+   （若存在且非空 → 那是 DeepSeek 写给你的指令，优先处理）。
+   ⚠️ **读完后不要在本文件打「已读」标记**（这是 DeepSeek 的地盘）——
+   改为在你下次写 `to-deepseek.md` 时开头声明「【已读】to-cline.md 第 N 轮」。
+   通信规则详见 `.agents/references/ai-mailbox-protocol.md`（双读单写、覆盖式、角色分工）。
 3. **定位文件用架构地图**（2026-10-08 新增）：`.agents/references/architecture-map.md`
    —— 一站式架构图 + 「改任务时的定位流程」表。**先读它、再决定要不要读局部**，不要先扫全仓。
 4. **白板任务**再按需读（**P0/P1/P2 已完成**，不再主动读已完成的规划）：
@@ -38,7 +40,7 @@
 
 | 命中条件 | 必须先读取 |
 |---|---|
-| **每个新对话（无例外）** | `.agents/mailbox/to-cline.md`（存在且非空 = DeepSeek 的指令，优先处理；处理完标注「（已读）」或清空）<br>+ `.agents/references/ai-mailbox-protocol.md`（通信协议：覆盖式、格式、分工） |
+| **每个新对话（无例外）** | `.agents/mailbox/to-cline.md`（存在且非空 = DeepSeek 的指令，优先处理；**读完后不去本文件打标记**，改为在自己信箱回执）<br>+ `.agents/references/ai-mailbox-protocol.md`（通信协议：**双读单写**、覆盖式、格式、分工） |
 | 任何开发 / 数据 / 代码 / 调试任务 | `.agents/PROJECT_MEMO.md`（见「零」启动清单） |
 | **定位「改哪个文件」** | `.agents/references/architecture-map.md`（一站式架构图 + 定位流程表） |
 | **白板 / Excalidraw / wb- 相关任何改动** | `.agents/references/whiteboard-integration.md`（原始约束，已实施完）<br>+ `.agents/references/architecture-map.md` §四（白板模块现状） |
@@ -61,6 +63,13 @@
    - 你能执行（改代码、跑命令、build），但**决策权在 DeepSeek**——架构决策、方案取舍、拿不准的点，**写进 `to-deepseek.md` 留给它裁决**，不要擅自拍板。
    - DeepSeek 与你是**平级的执行者**（它也能改代码），区别只在它多一个**决策权**。
    - 完整分工见 `.agents/references/ai-mailbox-protocol.md` §六。
+
+0.5 **信箱权限（双读单写 · 绝对排他）**：
+   - **可读 2 个**：`.agents/mailbox/to-cline.md`（DeepSeek 给你的指令）+ `.agents/mailbox/to-deepseek.md`（你自己的报告）。
+   - **只能写 1 个**：**只有 `to-deepseek.md` 是你的地盘**，你可自由覆盖。
+   - **绝对禁止**：修改 `to-cline.md` 的**任何字符**（含加标记、删空行、改标点）。
+   - **读完对方信后不要打「已读」标记**——改为**在自己下次写 `to-deepseek.md` 时，开头声明「【已读】to-cline.md 第 N 轮」**。
+   - 依据：`.agents/references/ai-mailbox-protocol.md` §2.1–2.3。
 1. **只追加，不改既有逻辑**——除非用户明确要求改动。
 2. **改代码返回完整文件代码**，不输出片段。
 3. **高德额度零消耗**——坐标由采集阶段提供，导入器不调用 geocode。
