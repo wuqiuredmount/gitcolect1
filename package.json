@@ -12,7 +12,9 @@
     "electron:build": "npm run build && electron-builder",
     "sync-map": "node scripts/sync-map.mjs",
     "lookup": "node scripts/lookup.mjs",
-    "crawl": "node scripts/crawl/index.mjs"
+    "crawl": "node scripts/crawl/index.mjs",
+    "integrity": "node scripts/integrity.mjs",
+    "backup": "node scripts/backup.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.1",
