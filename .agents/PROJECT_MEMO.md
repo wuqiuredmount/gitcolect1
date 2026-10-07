@@ -195,7 +195,7 @@ commit `77df0ac`。**⑤ 新增坑#16**（测试替身必须对照源码）。**
 | 11 | 时间字段与分组联动 | `aiImporter.buildDocHtml` + `BaseMapTool.handleFilterGroup` |
 | 12 | 多 AI 协作骨架 | `.agents/references/multi-ai-collab.md` |
 | 13 | 海量数据性能优化 | `layerScheduler.js`（分块 + 60 条窗口 + 30 秒轮换）|
-| 14.5 | 富文本点赞/倒赞 | `reactionStore.js` + `MarkerDocPanel.vue`；每打开一次各限1次；meta 表 key `graphic:{fileId}_{annotationId}`（2026-10-07 commit `335bf08`）|\
+| 14.5 | 富文本点赞/倒赞 | `reactionStore.js` + `MarkerDocPanel.vue`；每打开一次各限1次；meta 表 key `graphic:{fileId}_{annotationId}`（2026-10-07 commit `335bf08`）|
 | 14 | 第三产品入口（白板）| 已从「占位」→「完整功能区」；见 architecture-map §四 |
 
 ---
