@@ -14,7 +14,7 @@
 
 import { appendLayers, getAllLayers, saveAllLayers } from '../../geo/utils/annotationStore.js';
 import { saveDocument, getDocument, deleteDocument } from '../../geo/utils/documentStore.js';
-import { moveToRecycleBin } from '../../geo/utils/recycleStore.js';
+import { moveToRecycleBin, getRecycled } from '../../geo/utils/recycleStore.js';
 import { reserveSequence } from '../../geo/utils/systemStore.js';
 import { formatGraphicId } from '../../geo/utils/toolRegistry.js';
 import { buildFingerprint, isValidFingerprint } from '../../geo/utils/fingerprint.js';
@@ -151,11 +151,13 @@ export const getElementGroup = (element) => {
 // 白板元素类型：加 wb- 前缀，防止与地图元素指纹碰撞
 export const getWbType = (element) => `wb-${(element && element.type) || 'element'}`;
 
-// 判定元素是否「可登记」：只要有 id（兜底名称）且坐标换算成功即可登记。
-// 🖊️ 全登记路线：不再要求必须有自定义名称——无名元素的指纹用 element.id 参与计算。
-//    唯一排除项：已软删除、无法换算坐标（bounds/canvas 缺失或非法）的元素。
+// 判定元素是否「可登记」：只要有 id（指纹兜底名）且坐标换算成功即可登记。
+// 🖊️ 全登记路线：不要求必须有用户填写的名称 —— 匿名元素的指纹用 element.id 参与计算。
+//    唯一排除项：已软删除、无 id、无法换算坐标（bounds/canvas 缺失或非法）的元素。
 export const isRegisterable = (element, bounds, canvas) => {
   if (!element || element.isDeleted) return false;
+  // 🚨【第 25 轮】这里查的是「指纹兜底名」是否可用（getElementName 恒返回 element.id 兜底），
+  //   与「显示名是否为空」无关 —— 匿名元素必须仍然可登记。
   if (!getElementName(element)) return false;
   const anchor = getElementAnchor(element);
   if (!anchor) return false;
@@ -172,17 +174,28 @@ const escapeHtml = (s) => String(s)
   .replace(/"/g, '&quot;');
 
 // 构造 annotation 记录（坐标已换算）
+//
+// 🚨【第 25 轮：显示层空 vs 指纹层兜底】
+//   `name` 参数语义 = **用户显式填写的名称**（可为空字符串）。
+//   · 落库的 title / objectName 一律用 `name` 原值 —— 匿名元素即空字符串，
+//     不再把 element.id 写进显示字段（此前会在「文档名称 / 信息栏 / 信息数据库」里外显
+//     一串 nanoid，用户明确要求去掉）。
+//   · 但指纹维度 `buildFingerprint` **要求 name 非空**（缺任一维度指纹为空 ⇒ 元素登记不上）。
+//     故指纹计算不看 title/objectName，而由调用方传 `fpName`（匿名时 = element.id）单独喂入。
+//   ⚠️ 指纹算法本身（fingerprint.js）一行未动；这里只是「喂给它的字段值」不同。
 const buildAnnotation = ({ element, annotationId, fileId, bounds, canvas, group, name }) => {
   const anchor = getElementAnchor(element);
   const geo = canvasToLatLng(anchor, bounds, canvas) || {};
   const geometry = getElementGeometry(element);
+  // 显示用名称：只认用户填写的值（空则空，UI 层再兜「未命名」）
+  const displayName = String(name || '').trim();
 
-  return {
+  const layer = {
     id: annotationId,
     toolId: WB_TOOL_ID,
     fileId,
-    title: name,
-    objectName: name,
+    title: displayName,
+    objectName: displayName,
     type: getWbType(element),
     lat: geo.lat,
     lng: geo.lng,
@@ -198,16 +211,36 @@ const buildAnnotation = ({ element, annotationId, fileId, bounds, canvas, group,
     fields: Array.from({ length: 500 }).map(() => ({ label: '', value: '' })),
     style: { color: '#1890ff', iconType: 0, iconSize: 32, fillOpacity: 1 }
   };
+
+  // 🔑 指纹专用名称（**不落库**）：匿名的白板元素用 element.id 兜底，
+  //    保证 buildFingerprint 拿得到非空 name，元素才能登记成功。
+  //    ⚠️ 这个值只活在内存里的中间对象上，`buildFingerprint` 读完即弃 ——
+  //       绝不写进 annotations，也不会出现在任何 UI 上。
+  layer.__fpName = displayName || getFallbackName(element);
+
+  return layer;
 };
 
-// 默认富文本：把白板上的名称 / 文字先落一份，避免信息数据库里详情为空
-export const buildDefaultDocHtml = (element, name) => {
-  const parts = [];
-  if (name) parts.push(`<p><b>${escapeHtml(name)}</b></p>`);
-  const text = element && element.type === 'text' ? String(element.text || '').trim() : '';
-  if (text && text !== name) parts.push(`<p>${escapeHtml(text)}</p>`);
-  parts.push('<p style="color:#888;font-size:12px;">（由白板元素自动登记，可在富文本编辑器中补充详情）</p>');
-  return parts.join('\n');
+/**
+ * 🚨【第 25 轮】剥掉只在内存里用的 `__fpName` 字段。
+ *   为什么必须有这一步：`buildAnnotation` 会在对象上挂 `__fpName`（指纹专用名称），
+ *   它若跟着 `appendLayers` / `saveAllLayers` 落进 IndexedDB，就会变成一条
+ *   「表外字段」—— JSON 里多一个 `__fpName`，日后所有读 `_` 前缀字段的代码
+ *   都可能被它误伤，而且它与 objectName 语义重复、永不同步。
+ *   ⇒ 凡是「要写库」的 layer，一律先过这个函数。
+ */
+const stripTransientFields = (layer) => {
+  if (!layer || typeof layer !== 'object') return layer;
+  const { __fpName, ...rest } = layer;
+  return rest;
+};
+
+// 默认富文本：🚨【第 25 轮】用户要求「默认内容空白」——
+//   原先会自动塞入「名称 / 文字 /（由白板元素自动登记…）」三段模板，
+//   用户认为这是无意义噪音，应让富文本默认干净、由用户自己填。
+//   故本函数现在恒返回空字符串（保留函数签名与调用点，便于日后回退或再加模板）。
+export const buildDefaultDocHtml = () => {
+  return '';
 };
 
 
@@ -225,7 +258,11 @@ export const buildDefaultDocHtml = (element, name) => {
  * @param {boolean} [opts.allowDelete=true]  - 🚨【防御层 2】是否允许执行「删除分支」。
  *   调用方在画布尚未就绪（首帧空场景 / setScene 未完成）时必须传 false，
  *   否则 aliveIds 为空集 → idMap 全部命中 → 误把已登记元素批量软删除进回收站。
- * @returns {Promise<{registered:number, skipped:number, removed:string[], updated:number}>}
+ * @returns {Promise<{registered:number, skipped:number, removed:string[], updated:number,
+ *   prunedIds:string[]}>}
+ *   prunedIds —— 🆕【第 2 步 D】本轮「已完整入档回收站」的 **scene elementId** 列表
+ *   （注意：不是 annotationId，也不是数量）。调用方应据此把对应元素**从画布内存剔除**，
+ *   使画布与回收站收敛。详见下方 D 块注释。
  */
 export const syncScene = async ({
   elements,
@@ -236,7 +273,7 @@ export const syncScene = async ({
   autoRegister = true,
   allowDelete = true
 }) => {
-  const result = { registered: 0, skipped: 0, removed: [], updated: 0 };
+  const result = { registered: 0, skipped: 0, removed: [], updated: 0, prunedIds: [] };
   if (!idMap) return result;
 
   const list = Array.isArray(elements) ? elements : [];
@@ -265,6 +302,14 @@ export const syncScene = async ({
     const rawById = new Map();
     list.forEach(el => { if (el && el.id) rawById.set(el.id, el); });
     const removedIds = new Set();
+    // 🆕【第 2 步 D】本轮「已完整入档回收站」的 elementId 集合（scene id，非 annotationId）。
+    //   ⚠️ 与 removedIds 语义**不同**、**不可复用**：
+    //     removedIds   = annotationId，语义「四步全做完了」（含 deleteDocument / 指纹 / saveAllLayers）
+    //     archivedElementIds = elementId，语义「回收站里确实有完整记录」
+    //   只有后者才允许触发画布剔除 —— 否则剔了 = 数据凭空消失。
+    //   ⚠️ 不得改成 blanket `list.filter(e => !e.isDeleted)`：800ms 防抖窗内
+    //     尚未同步进 idMap 的新元素也会带 isDeleted，误剔即永久丢失。
+    const archivedElementIds = new Set();
     for (const elementId of deletedElementIds) {
       const annotationId = idMap.getAnnotationId(elementId);
       const layer = all.find(l => l.id === annotationId);
@@ -280,6 +325,25 @@ export const syncScene = async ({
         try {
           await moveToRecycleBin(WB_TOOL_ID, safeFileId, layer, docHtml, rawById.get(elementId) || null);
         } catch (e) { /* 忽略 */ }
+
+        // 🆕【第 2 步 D · D-b 回读确认】入档是否**真的成功**（唯一允许剔除的判据）
+        //   ⚠️ 为什么不能只判 try/catch：
+        //     moveToRecycleBin 的「静默早退」（recycleStore.js:23
+        //       `if (!toolId || !fileId || !layer || !layer.id) return;`）
+        //     与「真成功」的 `tx.oncomplete = () => resolve()` **返回值完全相同**（都是 undefined）
+        //     ⇒ 只靠 try/catch 会把「根本没写入」误判为成功 → 剔除 = 数据凭空消失。
+        //   ⚠️ 为什么必须同时要求 wbElementRaw 存在：
+        //     recycleStore.js:38-45 深拷贝失败时**仍会 store.put**（只 console.warn）
+        //     ⇒ 记录"成功"但无 raw ⇒ 剔除后恢复只能走「近似重建」降级（MEMO 坑#14）。
+        //     ⇒ 保守起见：raw 缺失一律**不剔**（宁可画布残留，不可恢复降级）。
+        //   ✅ 不修改 recycleStore.js（D-b 的核心优势：零跨文件侵入）。
+        let archivedOk = false;
+        try {
+          const rec = await getRecycled(WB_TOOL_ID, safeFileId, annotationId);
+          archivedOk = !!(rec && rec.annotationId === annotationId && rec.wbElementRaw);
+        } catch (e) { archivedOk = false; }
+        if (archivedOk) archivedElementIds.add(elementId);
+
         try { await deleteDocument(WB_TOOL_ID, safeFileId, annotationId); } catch (e) { /* 忽略 */ }
         try { await unregisterFingerprints(WB_TOOL_ID, [layer]); } catch (e) { /* 忽略 */ }
         removedIds.add(annotationId);
@@ -291,6 +355,21 @@ export const syncScene = async ({
     if (removedIds.size > 0) {
       await saveAllLayers(WB_TOOL_ID, safeFileId, all.filter(l => !removedIds.has(l.id)));
       console.log(`[elementSync] 白板元素软删除完成：${removedIds.size} 个（回收站/富文本/指纹/图形表已同步清理）`);
+    }
+
+    // 🆕【第 2 步 D · 交付剔除清单】只「报告」允许剔除的 elementId，**本函数不碰画布、也不写库**。
+    //   为什么返回清单而不在这里剔：
+    //     syncScene 是**纯数据层函数**（参数只有 elements/idMap/bounds/canvas/fileId），
+    //     既拿不到 boardRef（画布 API），也拿不到 board.scene（在 boardStore 里）
+    //     ⇒ 剔除必须由调用方（WhiteboardTool 的 runSync）用画布 API 完成。
+    //   为什么本函数内不立刻 saveBoard：
+    //     D 内立刻裸写会重新长出「无基线写」→ 抬高版本 → 用户紧随的真实编辑被 CAS 拒绝
+    //     （这正是第 19 轮 E1 刚堵死的洞）。库的收敛交给**既有落库时机**自然完成。
+    //   ⚠️ 位置必须在 `for` 循环之外、`allowDelete` 门控之内：
+    //     ⇒ allowDelete:false（首帧/未就绪）时 D 自动不执行，防御层 2 不可绕过。
+    if (archivedElementIds.size > 0) {
+      result.prunedIds = Array.from(archivedElementIds);
+      console.log(`[elementSync] D：已归档 ${result.prunedIds.length} 个元素待从画布剔除（画布收敛由调用方执行）`);
     }
   }
   } // 🚨【防御层 2】end if (allowDelete)
@@ -308,7 +387,10 @@ export const syncScene = async ({
   for (const element of list) {
     if (!element || element.isDeleted) continue;
 
-    const name = getElementName(element);
+    // 🚨【第 25 轮】显示名只认用户填写值（getCustomName），**不再**用 getElementName ——
+    //   后者带 element.id 兜底，会让匿名元素每一轮都被判成 renamed
+    //   （比较对象 prev.objectName 现在是空串）并触发无意义的指纹注销/重登。
+    const name = getCustomName(element);
     const annotationId = idMap.getAnnotationId(element.id);
 
     // 已登记：只同步坐标 / 名称（画布上拖动图形，地理坐标必须跟着走）
@@ -322,9 +404,11 @@ export const syncScene = async ({
         const geo = (boundsOk && canvasOk) ? canvasToLatLng(anchor, bounds, canvas) : null;
         const geometry = getElementGeometry(element);
         const moved = geo && (Math.abs(geo.lat - prev.lat) > 1e-9 || Math.abs(geo.lng - prev.lng) > 1e-9);
-        // 🖊️ 全登记后 name 恒非空（无名元素取 element.id），这里直接比较即可；
-        //    prev.objectName 存的也是同一套兜底值，语义一致。
-        const renamed = name !== prev.objectName;
+        // 🚨【第 25 轮修正】name 现在是「用户填写的显示名」（匿名 = 空串），
+        //   与 prev.objectName（同一套语义，旧记录可能残留 element.id）直比即可。
+        //   ⚠️ 旧库记录里 objectName 可能是历史遗留的 element.id —— 那是**一次性**差异，
+        //      首次同步会判 renamed（把值改成空串并重算指纹），之后恒等，不会反复触发。
+        const renamed = name !== String(prev.objectName || '');
         const reshaped = geometry.wbW !== prev.wbW || geometry.wbH !== prev.wbH;
         // 🆕 分组同步（2026-10-06 修，架构级 bug）：
         //   本分支原先**完全同步 customData.group** —— group 只在新增分支（:370）
@@ -340,8 +424,10 @@ export const syncScene = async ({
         if (moved || renamed || reshaped || regrouped) {
           const next = {
             ...prev,
-            title: name || prev.title,
-            objectName: name || prev.objectName,
+            // 🚨【第 25 轮】直接写 name（可为空串），**不再** `name || prev.title` ——
+            //   否则用户清空名称时永远删不掉旧值（title 会一直留住上一次的名字）。
+            title: name,
+            objectName: name,
             group: regrouped ? currentGroup : prev.group,
             wbX: geometry.wbX,
             wbY: geometry.wbY,
@@ -356,7 +442,10 @@ export const syncScene = async ({
           if (moved || renamed) {
             // 坐标或名称变了 → 指纹随之改变：注销旧的、登记新的
             try { await unregisterFingerprints(WB_TOOL_ID, [prev]); } catch (e) { /* 忽略 */ }
-            const fp = buildFingerprint(next);
+            // 🚨 指纹用「显示名 || element.id 兜底」（与新增分支同一套规则），
+            //   不能用 next.objectName —— 匿名为空串 ⇒ 指纹为空 ⇒ 元素会丢掉身份。
+            const fpName = name || getFallbackName(element) || '';
+            const fp = buildFingerprint({ ...next, name: fpName });
             if (isValidFingerprint(fp)) {
               next.fingerprint = fp;
               fpEntries.push({ fp, annotationId: next.id, fileId: safeFileId, group: next.group });
@@ -371,9 +460,11 @@ export const syncScene = async ({
       }
     }
 
-    // 未登记：只要坐标换算成功就入库（🖊️ 全登记：无名元素用 element.id 兜底）
+    // 未登记：只要坐标换算成功就入库（🖊️ 全登记：匿名元素照登记，显示名为空）
+    // 🚨【第 25 轮】原先 `|| !name` 会跳过错判 —— name 现在允许为空（匿名），
+    //   故此处**不再**把 name 当作必填条件；能否登记改由下面的指纹判定把关。
     if (!autoRegister) continue;
-    if (!boundsOk || !canvasOk || !name) { result.skipped++; continue; }
+    if (!boundsOk || !canvasOk) { result.skipped++; continue; }
 
     const geo = canvasToLatLng(getElementAnchor(element), bounds, canvas);
     if (!geo) { result.skipped++; continue; }
@@ -382,7 +473,9 @@ export const syncScene = async ({
     const candidate = buildAnnotation({
       element, annotationId: '__pending__', fileId: safeFileId, bounds, canvas, group, name
     });
-    const fp = buildFingerprint(candidate);
+    // 🚨 指纹用 __fpName（匿名元素 = element.id），**不能**用 candidate.objectName ——
+    //   后者现在是「用户填的名称」语义，匿名时为空 ⇒ 指纹为空 ⇒ 元素登记不上。
+    const fp = buildFingerprint({ ...candidate, name: candidate.__fpName });
     if (!isValidFingerprint(fp)) { result.skipped++; continue; }
 
     toAppend.push({ element, name, group, fp });
@@ -412,7 +505,8 @@ export const syncScene = async ({
           group: t.group, name: t.name
         });
         layer.fingerprint = t.fp;
-        layers.push(layer);
+        // 🚨 落库前剥掉内存专用的 __fpName（见 stripTransientFields 注释）
+        layers.push(stripTransientFields(layer));
         docs.push({ annotationId, docHtml: buildDefaultDocHtml(t.element, t.name) });
         fpEntries.push({ fp: t.fp, annotationId, fileId: safeFileId, group: t.group });
         idMap.set(t.element.id, annotationId);
@@ -462,9 +556,12 @@ export const registerElement = async ({
   element, idMap, bounds, canvas, fileId = 'legacy-file', name, group
 }) => {
   if (!element || !idMap || !isValidBounds(bounds) || !isValidCanvas(canvas)) return null;
-  // 🖊️ 全登记：名称缺省时用 element.id 兜底（与 syncScene 保持一致）
-  const finalName = String(name || getElementName(element) || getFallbackName(element) || '').trim();
-  if (!finalName) return null;
+  // 🚨【第 25 轮】这里检查的是「能不能拿到指纹」，不是「有没有显示名」：
+  //   匿名元素也允许登记（全登记路线），故判定用 __fpName（内部含 element.id 兜底）。
+  //   显示名一律只认用户填写的值（getCustomName），空就是空。
+  const displayName = String(name || getCustomName(element) || '').trim();
+  const fpName = displayName || getFallbackName(element) || '';
+  if (!fpName) return null;
   const geo = canvasToLatLng(getElementAnchor(element), bounds, canvas);
   if (!geo) return null;
 
@@ -475,15 +572,17 @@ export const registerElement = async ({
   const layer = buildAnnotation({
     element, annotationId, fileId: safeFileId, bounds, canvas,
     group: group || getElementGroup(element),
-    name: finalName
+    name: displayName
   });
-  const fp = buildFingerprint(layer);
+  // 🚨 指纹用 __fpName（匿名元素 = element.id），不能用 layer.objectName（可为空）
+  const fp = buildFingerprint({ ...layer, name: layer.__fpName });
   if (!isValidFingerprint(fp)) return null;
   layer.fingerprint = fp;
 
   try {
-    await appendLayers(WB_TOOL_ID, safeFileId, [layer]);
-    await saveDocument(WB_TOOL_ID, safeFileId, annotationId, buildDefaultDocHtml(element, finalName));
+    // 🚨 落库前剥掉内存专用的 __fpName
+    await appendLayers(WB_TOOL_ID, safeFileId, [stripTransientFields(layer)]);
+    await saveDocument(WB_TOOL_ID, safeFileId, annotationId, buildDefaultDocHtml());
     await registerFingerprints(WB_TOOL_ID, [{ fp, annotationId, fileId: safeFileId, group: layer.group }]);
   } catch (e) {
     console.error('[elementSync] 手动登记元素失败:', e);
@@ -491,7 +590,8 @@ export const registerElement = async ({
   }
 
   idMap.set(element.id, annotationId);
-  return layer;
+  // 返回值也剥掉 __fpName，避免调用方（UI）拿到带内部字段的对象
+  return stripTransientFields(layer);
 };
 
 /**

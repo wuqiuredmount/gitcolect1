@@ -141,7 +141,10 @@
         <ul class="wb-element-list">
           <li v-for="item in registeredList" :key="item.id" @click="locateElement(item)">
             <span class="wb-el-id">{{ item.id }}</span>
-            <span class="wb-el-name">{{ item.objectName || item.title }}</span>
+            <!-- 🚨【第 25 轮】UI 显示兜底：objectName 为空（匿名元素）→ 「未命名」，
+                 绝不回退显示 element.id / annotation id（用户明确要求不露技术 ID）。
+                 兜底只在这一层做，数据层保持真实的空字符串。 -->
+            <span class="wb-el-name">{{ item.objectName || item.title || '未命名' }}</span>
             <button class="wb-el-doc" @click.stop="openDoc(item)">详情</button>
           </li>
           <li v-if="registeredList.length === 0" class="wb-empty">暂无已登记元素</li>
@@ -1133,13 +1136,14 @@ const openDoc = async (item) => {
     const html = await getDocument(WB_TOOL_ID, safeFileId(), item.id);
     if (html === null || html === undefined) {
       docPreview.value = {
-        name: item.objectName || item.title || item.id,
-        html: '<p style="color:#9ca3af;">该元素暂无富文本内容（新元素会自动生成模板，可在信息数据库查看）。</p>'
+        // 🚨【第 25 轮】兜底「未命名」，不再回退 item.id（不露技术 ID）
+        name: item.objectName || item.title || '未命名',
+        html: '<p style="color:#9ca3af;">该元素暂无富文本内容，可在右侧编辑器中补充。</p>'
       };
       return;
     }
     docPreview.value = {
-      name: item.objectName || item.title || item.id,
+      name: item.objectName || item.title || '未命名',
       html: String(html) || '<p style="color:#9ca3af;">暂无内容</p>'
     };
   } catch (e) {

@@ -117,7 +117,9 @@
               </div>
               <ul v-if="groupMembers.length > 0" class="member-list">
                 <li v-for="m in groupMembers" :key="m.id">
-                  <span class="m-name" @click="locateItem(m)" title="点击定位">{{ m.title || '未命名图形' }}</span>
+                  <!-- 🚨【第 25 轮】显示兜底：白板匿名元素 objectName 为空 → m.title 也为空
+                       ⇒ 落「未命名图形」（原样式表已备好该文案，此处只是补齐白板场景）。 -->
+                  <span class="m-name" @click="locateItem(m)" title="点击定位">{{ m.title || m.objectName || '未命名图形' }}</span>
                   <span class="m-id">{{ m.id }}</span>
                   <button class="m-del" @click="deleteMember(m)" title="移入回收站">🗑️</button>
                 </li>

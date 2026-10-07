@@ -338,14 +338,19 @@ const handleExportDocx = () => {
 
 <style scoped>
 /* 样式完全保持原样 */
-.doc-panel { position: absolute; top: 15px; right: 15px; width: 380px; bottom: 80px; background: #fff; border-radius: 5px; box-shadow: 0 3px 10px rgba(0,0,0,0.3); z-index: 1000; display: flex; flex-direction: column; overflow: hidden; }
+/* 🚨【字体修正】显式写死 font-family，不依赖继承。
+   - 地图侧：父级是 GisApp 的 .app-container（显式 'Segoe UI', 'Microsoft YaHei'）→ 父值可继承；
+   - 白板侧：面板挂在 Excalidraw 宿主内，而 Excalidraw 会往容器注入自己的 font-family
+     （Helvetica/Nunito/Comic 之类）→ .doc-editor 不指定就**跟着 Excalidraw 跑**，与鹰眼不一致。
+   ⇒ 显式声明成与 GisApp.vue:840 同一套字体栈，两侧都不再受父级影响。 */
+.doc-panel { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; position: absolute; top: 15px; right: 15px; width: 380px; bottom: 80px; background: #fff; border-radius: 5px; box-shadow: 0 3px 10px rgba(0,0,0,0.3); z-index: 1000; display: flex; flex-direction: column; overflow: hidden; }
 .doc-header { display: flex; justify-content: space-between; align-items: center; background: #2c3e50; padding: 8px 15px; color: white; }
 .panel-title { font-size: 14px; font-weight: 600; }
 .close-btn { background: none; border: none; color: white; font-size: 20px; cursor: pointer; line-height: 1; margin-left: 5px; }
 .close-btn:hover { color: #ff6b6b; }
 .doc-title-bar { display: flex; align-items: center; padding: 8px 15px; background: #f8f9fa; border-bottom: 1px solid #ddd; }
 .doc-title-label { font-size: 12px; color: #666; white-space: nowrap; margin-right: 5px; }
-.title-input { flex: 1; border: 1px solid #ddd; border-radius: 3px; padding: 4px 8px; font-size: 13px; outline: none; }
+.title-input { flex: 1; border: 1px solid #ddd; border-radius: 3px; padding: 4px 8px; font-size: 13px; outline: none; font-family: inherit; }
 .title-input:focus { border-color: #1890ff; }
 .title-input::placeholder { color: #aaa; }
 .style-panel { background: #fafafa; border-bottom: 1px solid #ddd; }
@@ -362,6 +367,9 @@ const handleExportDocx = () => {
 .doc-toolbar button:active { background: #dde0e3; }
 .doc-hint { font-size: 10px; color: #999; margin-left: auto; }
 .doc-editor { flex: 1; padding: 15px 20px; overflow-y: auto; background: #fff; font-size: 14px; line-height: 1.8; color: #333; outline: none; text-align: left; word-break: keep-all; overflow-wrap: break-word; white-space: pre-wrap; }
+/* 🚨【字体修正】编辑器正文再显式声明一次（不依赖 .doc-panel 的继承），
+   保证「用户实际读写的这段文字」字体一定与鹰眼侧一致。 */
+.doc-editor, .doc-editor * { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; }
 .doc-editor::-webkit-scrollbar { width: 6px; }
 .doc-editor::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
 .doc-editor::-webkit-scrollbar-track { background: #f1f1f1; }
