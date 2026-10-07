@@ -1,4 +1,4 @@
-﻿# 项目记忆与上下文交接（PROJECT_MEMO）
+# 项目记忆与上下文交接（PROJECT_MEMO）
 
 > **用途**：DeepSeek 网页版上下文有限、会话可能中断。
 > 本文件是**跨会话的唯一权威记忆**。新会话开始时，AI 必须先读它。
@@ -687,6 +687,17 @@ for (const tool of allToolsWithWhiteboard.value) {   // 7 库
 
 **分工约定**：代码文件 → `write_file`/`edit_file`（强制审批，不绕）；
 数据文件 → `npm run data-ops`（免审批，用户已授权，有回收站+历史库+本地备份三重兜底）。
+
+### 16.6 记忆文件免审批通道（2026-10-07 追加，commit `9bede5b`）
+
+用户授权把 3 个记忆文件纳入 data-ops 免审批，用于跨会话更新项目记忆。
+
+**白名单（精确匹配，无通配）**：.agents/PROJECT_MEMO.md、.agents/references/active-task.md、.agents/PROJECT_MEMO_ARCHIVE.md`n
+**比数据文件更严**：① 仅 write，delete/list 硬拒 ② 无目录通配 ③ 其余 .agents/** 一律拒绝。
+
+**验证 8/8**：数据 write/delete ✅；src、根配置、.agents 非白名单 ❌ 拒绝；记忆 write ✅；记忆 delete/list ❌ 拒绝。
+
+**闭环**：改白名单 = 改 scripts/data-ops.mjs = 不在任何白名单 = 必须审批 ⇒ 锁不能被自己免审地改。
 
 ### 16. 跨模块复用校验器时，测试断言必须读源码（2026-10-08 第 23 轮）
 
