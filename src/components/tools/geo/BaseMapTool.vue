@@ -572,6 +572,9 @@ const handleDeleteLayer = () => {
 
 // 加载时过滤无效坐标
 const loadHistoricalLayers = async () => {
+  // 🔬 诊断探针（2026-10-06，临时，定位「图形列表 4277 vs 数据库 462」bug）
+  //    看调用次数与调用时的既有长度，判断 concat 是否在累加重复
+  console.log('[诊断-LHL] 被调用，drawnLayers 现有:', drawnLayers.value.length, '| 时间:', Date.now());
   if (!map || !editableLayers) return;
   // 🚨 只读取当前文件的图形
   // 🚨 核心修复：鹰眼平台作为公共平台，不进行文件隔离，加载所有历史数据
@@ -1340,6 +1343,9 @@ const restoreAnnotations = (annotations) => {
 };
 
 const refreshDataFromDB = async () => {
+  // 🔬 诊断探针（2026-10-06，临时，定位「图形列表 4277 vs 数据库 462」bug）
+  //    看它是谁触发的、清空前的既有长度是多少（用于确认累加基数）
+  console.log('[诊断-RFD] 被调用，清空前 drawnLayers:', drawnLayers.value.length, '| 时间:', Date.now());
   if (!map || !editableLayers) return;
   editableLayers.clearLayers();
   drawnLayers.value = [];

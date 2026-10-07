@@ -8,6 +8,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue';
 import { mountExcalidraw, captureScene, applyScene, sanitizeElements } from './utils/excalidrawBridge.js';
+import { filterBrokenElements } from './utils/elementSync.js';
 
 const props = defineProps({
   // 初始场景（仅首次挂载时生效，之后由画布自己维护）
@@ -26,11 +27,35 @@ let api = null;
 //   改为打标记，等 onApiReady 里补执行。
 let sceneDirty = false;
 
+/**
+ * 🛡️【C 方案 · 最后一道防线】把任意来源的元素数组净化成「可安全渲染」的数组。
+ *   两道关卡串联，顺序不可颠倒：
+ *     ① filterBrokenElements —— 按 type 校验必需字段，剔除残缺元素（防渲染崩溃）
+ *     ② sanitizeElements    —— 字段级序列化容错（防 IndexedDB DataCloneError）
+ *   之所以放在**本组件内**（而非只在 WhiteboardTool），是因为这里是
+ *   `initialData.elements` 与 `updateScene({elements})` 的**唯一出口** ——
+ *   无论上游哪条路径漏了校验，都拦得住（既含 props.initialScene，
+ *   也含 watch 触发的 setScene / applyScene）。
+ * @param {Array} elements - 任意来源的元素数组
+ * @returns {Array} 可安全渲染的元素数组
+ */
+const toSafeElements = (elements) => {
+  const { safe, dropped } = filterBrokenElements(elements);
+  if (dropped.length > 0) {
+    // ⚠️ console.warn（非 debug）：护住画布的安全哨兵，必须可见
+    console.warn(`[ExcalidrawBoard] 🛡️ 已隔离 ${dropped.length} 个残缺元素（防渲染崩溃）：`);
+    dropped.forEach(d => {
+      console.warn(`[ExcalidrawBoard]   - id=${d.id} type=${d.type} 缺字段=[${d.missing.join(', ')}]`);
+    });
+  }
+  return sanitizeElements(safe);
+};
+
 onMounted(() => {
   if (!host.value) return;
   instance = mountExcalidraw(host.value, {
     initialData: {
-      elements: sanitizeElements(props.initialScene),
+      elements: toSafeElements(props.initialScene),
       appState: props.initialAppState || {}
     },
     uiOptions: props.uiOptions,
@@ -40,11 +65,11 @@ onMounted(() => {
       //   理由：父组件可能在画布创建之后才拿到 scene（异步读库），
       //   或 initialScene 在挂载时仍是空数组。此处以「权威数据」姿态重放一次，
       //   保证画布里一定是 props.initialScene 对应的场景，不残留空场景快照。
-      applyScene(api, props.initialScene, props.initialAppState);
+      applyScene(api, toSafeElements(props.initialScene), props.initialAppState);
       // 补执行：api 就绪前被 watch 拦下的场景替换请求
       if (sceneDirty) {
         sceneDirty = false;
-        applyScene(api, props.initialScene, props.initialAppState);
+        applyScene(api, toSafeElements(props.initialScene), props.initialAppState);
       }
       emit('api-ready', nextApi);
     },
@@ -70,7 +95,8 @@ const getScene = () => {
 
 // 外部需要用新数据整体替换画布时调用（切换白板 / 恢复备份）
 const setScene = (elements, appState) => {
-  applyScene(api, elements, appState);
+  // 🛡️【C 方案】出口统一净化（setScene 是外部直接注入元素的入口）
+  applyScene(api, toSafeElements(elements), appState);
 };
 
 // 手动聚焦到某个元素（信息栏点击定位用）
@@ -94,7 +120,7 @@ watch(() => props.initialScene, (next, prev) => {
     sceneDirty = true;
     return;
   }
-  applyScene(api, next, props.initialAppState);
+  applyScene(api, toSafeElements(next), props.initialAppState);
 }, { deep: false });
 
 defineExpose({

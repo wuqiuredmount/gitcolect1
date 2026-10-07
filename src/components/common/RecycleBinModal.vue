@@ -81,7 +81,7 @@ import { executeDataCommand } from '../../groups/geo/utils/aiDataCommand.js';
 import { TOOL_META, TOOL_ORDER } from '../../groups/geo/utils/toolRegistry.js';
 // 🖊️ 白板：恢复时同步还原画布元素（T1 修复）
 import { restoreElementsToBoard } from '../../groups/whiteboard/utils/elementSync.js';
-import { getAllBoards, WB_LEGACY_BOARD_ID } from '../../groups/whiteboard/utils/boardStore.js';
+import { getAllBoards, WB_LEGACY_BOARD_ID, getBoard, saveBoard } from '../../groups/whiteboard/utils/boardStore.js';
 import { getBounds, getCanvas } from '../../groups/whiteboard/utils/boardSettings.js';
 
 const props = defineProps({
@@ -191,19 +191,32 @@ const formatTime = (iso) => {
   }
 };
 
+// 🚀 性能优化（方案 2）：7 个工具库来自**不同的 IndexedDB 库**，
+//   彼此无锁竞争 → 可安全并发。旧版逐个 await 串行，开窗要等 7 轮事件循环往返。
+//   ⚠️ 逐库 catch 兜底：任一库损坏/被占用都不能炸掉整个列表（退化为空数组）。
 const loadItems = async () => {
   message.value = '';
-  const all = [];
-  for (const toolId of TOOL_ORDER) {
-    try {
-      const list = await getAllRecycled(toolId);
-      all.push(...list);
-    } catch (e) {
-      console.warn('[回收站] 读取工具失败:', toolId, e);
-    }
-  }
+  const lists = await Promise.all(
+    TOOL_ORDER.map(toolId =>
+      getAllRecycled(toolId).catch(e => {
+        console.warn('[回收站] 读取工具失败:', toolId, e);
+        return [];
+      })
+    )
+  );
+  const all = lists.flat();
   all.sort((a, b) => new Date(b.deletedAt) - new Date(a.deletedAt));
   items.value = all;
+};
+
+// 🚀 性能优化（方案 3）：缓存局部更新。
+//   旧版每次「恢复 / 彻底删除」后都调 loadItems()（= 7 库全量重查），只为从列表里去掉 1 行；
+//   连续操作 N 条就是 7N 次库遍历，这才是卡顿主因。
+//   现在改为纯内存过滤，操作后零库开销。
+//   ⚠️ 直接修改数组元素（splice）而非重建数组，避免 Vue 丢失列表项身份导致整表重渲染。
+const removeItemLocally = (item) => {
+  const i = items.value.indexOf(item);
+  if (i !== -1) items.value.splice(i, 1);
 };
 
 // 取当前白板编号（白板工具为单白板场景，与 WhiteboardTool 的 ensureDefaultBoard 同源）
@@ -217,10 +230,13 @@ const pickBoardId = async () => {
 };
 
 // 取当前换算基准（bounds / canvas），用于 wbElementRaw 缺失时的近似重建
+// 🚀 性能优化（方案 4）：bounds 与 canvas 来自同一白板设置表、互不依赖 → 合并并发读取，
+//   把两次串行数据库往返压成一次。仅白板元素恢复时才会走到（地图元素直接 return null）。
 const getRegisteredElementsWithBoard = async () => {
   let restored = null;
   try {
-    restored = { bounds: await getBounds(), canvas: await getCanvas() };
+    const [bounds, canvas] = await Promise.all([getBounds(), getCanvas()]);
+    restored = { bounds, canvas };
   } catch (e) {
     restored = null;
   }
@@ -255,13 +271,69 @@ const restoreWhiteboardScene = async (item) => {
       bounds: restored?.bounds || null,
       canvas: restored?.canvas || null
     });
+    // 🛡️【缺陷 1 · 第 1 步 E1（2026-10-07）】恢复流程的执行顺序调整
+    //
+    // 【背景】`restoreElementsToBoard` 内部原本有一句**裸写**：
+    //     if (revived>0 || rebuilt>0) await saveBoard({...scene})
+    //   它**不传 baseUpdatedAt** → 绕过 boardStore 的乐观并发控制（CAS）。
+    //   由此产生一条**不可逆 + 静默**的数据丢失路径（详见 elementSync.js 内注释）：
+    //     恢复算出的新 scene **没有落库**（走 missing 分支时）→ 库没变 →
+    //     白板侧 onBeforeUnmount 的乐观写**基线匹配 → 写入成功** →
+    //     旧快照带着 isDeleted=true 覆盖回去 → 元素永久消失，而 UI 显示「恢复成功」。
+    //
+    // 【E1 解法】裸写删除后，本函数必须**自己负责把 result.scene 落库**。
+    //   ⇒ 调整顺序：**先写库（第 3 步）→ 再通知白板刷新画布（第 4 步）**。
+    //   这样白板侧的 `refreshDataFromDB` 读到的就是**已含恢复元素的新 scene**：
+    //     · 不再依赖「白板正开着」—— 白板没开时，库也已经是正确状态 ✅
+    //     · 白板开着时，refreshDataFromDB 的 `persistBoardAuthoritative` 会再写一次
+    //       （内容相同，幂等；但会推进 updatedAt，这是权威写的预期行为）✅
+    //     · 不存在「库变了但白板侧基线没变」的时间窗 ⇒ 上述丢失链被切断 ✅
+    //
+    // ⚠️ 顺序不能反：若先 notify 后写库，白板会把**旧 scene** 灌进画布，
+    //   且其内部权威写会用旧 scene 覆盖库 → 恢复的元素被抹掉。
+    let persisted = null;
+    try {
+      persisted = await persistRestoredScene(boardId, result.scene);
+    } catch (e) {
+      console.warn('[回收站] 恢复场景落库失败（元素已回到 annotations，画布可能未更新）:', e);
+    }
     // 让白板组件重建 idMap，避免下一次 onChange 把恢复的元素当成新元素重复登记
     await notifyWhiteboardRefresh();
-    return result;
+    // 把落库结果附在返回值上，供 handleRecover 给出更准确的提示
+    return { ...result, _persisted: persisted };
   } catch (e) {
     console.warn('[回收站] 白板场景还原失败（记录已恢复，画布需手动同步）:', e);
     return null;
   }
+};
+
+/**
+ * 🛡️【缺陷 1 · 第 1 步 E1】把恢复后的 scene 以**权威写**落库
+ *
+ * 与 `WhiteboardTool.persistBoardAuthoritative` 同语义：**不传 baseUpdatedAt**
+ * ⇒ 强制生效（恢复是权威动作，用户的恢复意图优先于一切）。
+ *
+ * ⚠️ 为什么不只传 scene：`boardStore.saveBoard` 对 `appState` 是
+ *   `board.appState || {}`，**没有 existing 兜底** ⇒ 只传 scene 会把 appState 清成 `{}`。
+ *   ⇒ 必须先 `getBoard()` 取完整记录再覆写。
+ *
+ * @param {string} boardId
+ * @param {Array} scene - restoreElementsToBoard 算出的新场景
+ * @returns {Promise<{saved:boolean, reason?:string}|null>}
+ */
+const persistRestoredScene = async (boardId, scene) => {
+  if (!boardId || !Array.isArray(scene)) return null;
+  const current = await getBoard(boardId);
+  if (!current) return null;
+  return await saveBoard({
+    boardId,
+    fileId: current.fileId,
+    name: current.name,
+    bounds: current.bounds,
+    canvas: current.canvas,
+    scene,
+    appState: current.appState || {}
+  });   // ⚠️ 不传 baseUpdatedAt = 权威写，强制生效
 };
 
 const handleRecover = async (item) => {
@@ -277,6 +349,8 @@ const handleRecover = async (item) => {
       await saveDocument(item.toolId, item.fileId, item.annotationId, item.docHtml);
     }
     // 3. 🖊️ 白板元素：同步把画布元素还原（擦除 isDeleted / 用 wbElementRaw 精确补回）
+    //    ⚠️【E1】本步内部已负责把恢复后的 scene **落库**（权威写），
+    //      返回的 `_persisted` 反映落库结果 ⇒ 下面的提示据此区分「真还原」与「落库失败」。
     const wbResult = await restoreWhiteboardScene(item);
     // 4. 从回收站移除
     await purgeFromRecycleBin(item.toolId, item.fileId, item.annotationId);
@@ -285,9 +359,13 @@ const handleRecover = async (item) => {
       if (wbResult.revived > 0) tip += '（画布已精确还原）';
       else if (wbResult.rebuilt > 0) tip += '（画布已重建）';
       else if (wbResult.missing && wbResult.missing.length) tip += '（⚠️ 画布元素缺失，请回到白板检查）';
+      // 🛡️【E1】落库失败必须明确告知 —— 否则用户会以为恢复已完全生效
+      if (wbResult._persisted && wbResult._persisted.saved === false) {
+        tip += '（⚠️ 场景落库未成功，请回到白板点「立即同步」）';
+      }
     }
     message.value = tip;
-    await loadItems();
+    removeItemLocally(item);   // 🚀 方案 3：只从列表移除该行，不再全量 loadItems()
     emit('changed');
   } catch (e) {
     message.value = '恢复失败：' + (e.message || e);
@@ -299,7 +377,8 @@ const handlePurge = async (item) => {
   try {
     await purgeFromRecycleBin(item.toolId, item.fileId, item.annotationId);
     message.value = '已彻底删除';
-    await loadItems();
+    removeItemLocally(item);   // 🚀 方案 3：局部移除
+    emit('changed');
   } catch (e) {
     message.value = '删除失败：' + (e.message || e);
   }
@@ -312,12 +391,19 @@ const handleClearAll = async () => {
       await clearRecycleBin(toolId);
     }
     message.value = '回收站已清空';
-    await loadItems();
+    items.value = [];          // 🚀 方案 3：清空是全局操作，直接清空缓存
+    emit('changed');
   } catch (e) {
     message.value = '清空失败：' + (e.message || e);
   }
 };
 
+// 🚨 开窗时机（关键，勿删）：方案 3 落地后，「每次操作后重载」这个隐式新鲜度保证已移除，
+//   因此**必须在弹窗打开时无条件全量 loadItems()** —— 否则若回收站被其他入口写入
+//   （如删除操作、AI 指令执行），上次关闭时的旧列表会在本次开窗被直接显示。
+//   ⚠️ 这里**不能** emit('changed')：GisApp 把该事件接到 loadAllLayersFromDB()，
+//      而它是「7 库 × N 图层 + 每图层一次 getDocument」的 N+1 全量重查，
+//      开窗就触发会直接抵消本次性能优化的收益。仅用户实际增删后才通知。
 watch(() => props.visible, (val) => {
   if (val) loadItems();
 });

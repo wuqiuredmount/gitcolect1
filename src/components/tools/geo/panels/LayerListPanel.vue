@@ -24,7 +24,7 @@
         <button class="fav-open-btn" @click="isFavModalOpen = true" title="打开收藏夹"> ★ 收藏夹 </button>
       </div>
 
-      <div class="window-hint">当前显示 {{ displayedLayers.length }} 个 · 每 30 秒自动轮换</div>
+      <div v-if="!hideWindowHint" class="window-hint">当前显示 {{ displayedLayers.length }} 个 · 每 30 秒自动轮换</div>
 
       <ul v-if="displayedLayers.length > 0" class="layer-list">
         <li v-for="item in displayedLayers" :key="item.id" @dblclick="locateItem(item)" title="双击定位">
@@ -167,7 +167,11 @@ const props = defineProps({
   hotspotIds: { type: Array, default: () => [] },
   enableHotspot: { type: Boolean, default: false },
   // 🚨 地图当前实际显示的图形 id 集合（显示窗口，上限 60）
-  displayIds: { type: Array, default: () => [] }
+  displayIds: { type: Array, default: () => [] },
+  // ✨ 是否隐藏「当前显示 N 个 · 每 30 秒自动轮换」提示行（2026-10-06 新增）
+  //   地图侧：显示窗口与 30 秒轮换生效 → 不传 = false = 提示行照常显示（与改动前完全一致）
+  //   白板侧：无显示窗口、无轮换（不传 displayIds / 不启动定时器）→ 传 true，避免文案说谎
+  hideWindowHint: { type: Boolean, default: false }
 });
 const emit = defineEmits(['locate', 'add-group', 'remove-group', 'update-layer-group', 'delete-layer', 'filter-group', 'refresh-hotspot']);
 

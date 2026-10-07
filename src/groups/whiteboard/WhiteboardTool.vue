@@ -15,6 +15,11 @@
       </span>
       <span v-if="lastSyncAt" class="wb-badge wb-badge-dim">同步于 {{ lastSyncText }}</span>
       <span class="wb-spacer"></span>
+      <!-- 🧪【临时调试，2026-10-07】清理「幽灵元素」：见 handleCleanGhostElements 注释。
+           ⚠️ 排查结束后必须整块删除（含下方 handler / 导入 / 样式）。 -->
+      <button class="wb-btn wb-btn-danger" @click="handleCleanGhostElements" :disabled="ghostCleaning">
+        {{ ghostCleaning ? '清理中…' : '[临时调试] 清理幽灵元素' }}
+      </button>
       <button class="wb-btn" @click="syncNow" :disabled="syncing">{{ syncing ? '同步中…' : '立即同步' }}</button>
       <button class="wb-btn" @click="isGeoPanelOpen = !isGeoPanelOpen">
         {{ isGeoPanelOpen ? '收起范围设置' : '地理范围设置' }}
@@ -47,6 +52,31 @@
           </Suspense>
         </template>
         <div v-else class="wb-loading">正在还原白板场景…</div>
+
+        <!-- ⬇️ 白板 P0 面板（块 3 新增，2026-10-06）
+             🚨 插入点必须是 .wb-canvas-wrap 内部、且与上面的 v-if="boardReady" 同级：
+               ① 在 .wb-canvas-wrap 内 → 它是最近的 positioned 祖先（第 618 行 position:relative），
+                  InfoPanel 的 MapPanel 非 inline 是 position:absolute，包含块正是它
+                  → 信息栏落在「画布左下角」，与鹰眼视觉一致。
+                  若放到 .whiteboard-tool 的直接子级（无 position）→ 包含块会上溯到
+                  GisApp 的 .tool-content（position:relative + overflow:hidden）
+                  → 既跑位、又可能被裁。
+               ② 与 v-if="boardReady" 同级（不放进 v-if 内）→ Teleport 不被 boardReady 延后，
+                  顶栏「图形列表」首帧即可挂载。
+             ⚠️ 本组件自身无样式、不产生定位上下文，不影响上面的 absolute 包含块链。 -->
+        <WhiteboardPanels
+          ref="wbPanelsRef"
+          :layers="wbPanelLayers"
+          :groups="wbPanelGroups"
+          :tool-id="WB_TOOL_ID"
+          @locate="whiteboardLocate"
+          @add-group="handleWbAddGroup"
+          @remove-group="handleWbRemoveGroup"
+          @update-layer-group="handleWbUpdateGroup"
+          @delete-layer="handleWbDeleteElement"
+          @filter-group="handleWbFilterGroup"
+          @update-layer="handleWbLayerUpdate"
+        />
       </div>
 
       <!-- 右侧：地理范围 / 画布基准 设置 -->
@@ -100,9 +130,26 @@ const AsyncExcalidrawBoard = defineAsyncComponent(
 import { ensureCoordinateBasis, getBounds, setBounds, getCanvas, setCanvas, getBoardName } from './utils/boardSettings.js';
 import { getDocument } from '../geo/utils/documentStore.js';
 import { ensureDefaultBoard, saveBoard, getBoard, WB_LEGACY_BOARD_ID } from './utils/boardStore.js';
-import { WB_TOOL_ID, syncScene, rebuildIdMap, getRegisteredElements, ElementIdMap } from './utils/elementSync.js';
+// ✅ 合并导入：filterBrokenElements 与 WB_TOOL_ID 等同源自 elementSync.js
+import { WB_TOOL_ID, syncScene, rebuildIdMap, getRegisteredElements, ElementIdMap,
+         filterBrokenElements } from './utils/elementSync.js';
+// 🧪【临时调试，2026-10-07】清理幽灵元素用：读白板记录 + 图表 + 回收站读写。
+//   ⚠️ 排查结束后与 handleCleanGhostElements 一起删除。
+import { getAllLayers } from '../geo/utils/annotationStore.js';
+import { getAllRecycled, purgeFromRecycleBin } from '../geo/utils/recycleStore.js';
 import { WHITEBOARD_DEFAULTS } from '../geo/utils/toolDefaults.js';
 import { isValidBounds, isValidCanvas } from './utils/coordinate.js';
+// 🧩 块 3：白板 P0 面板（图形列表 → 顶栏；信息栏 → 画布左下角浮层）
+import WhiteboardPanels from './WhiteboardPanels.vue';
+// 🧩 块 4：画布侧写操作（改组 / 删除）所需的官方 API
+//   核实来源 node_modules/@excalidraw/excalidraw/dist/types/excalidraw/index.d.ts:22-23
+//     `export { mutateElement, ... } from "./element/mutateElement"`
+//     `export { CaptureUpdateAction } from "./store"`
+//   ⚠️ MEMO R5：mutateElement 只改引用、**不触发重绘**，必须配
+//      updateScene({ elements, captureUpdate: CaptureUpdateAction.IMMEDIATELY })
+import { mutateElement, CaptureUpdateAction } from '@excalidraw/excalidraw';
+// ⚠️ 此处**不** import moveToRecycleBin：删除的唯一落库入口是 runSync（elementSync.js:281）。
+//    白板面板侧手动调它会形成第二个删除入口，并因缺 wbElementRaw 导致恢复失效（见 handleWbDeleteElement 注释）。
 
 const props = defineProps({
   fileId: { type: String, default: 'legacy-file' },
@@ -157,6 +204,9 @@ const armCanvasReady = (reason) => {
 const stats = reactive({ total: 0, registered: 0, skipped: 0 });
 const registeredList = ref([]);
 
+// 🧩 块 3：白板 P0 面板包装组件 ref（用于「画布点选 → 信息栏联动」）
+const wbPanelsRef = ref(null);
+
 const geoForm = reactive({
   minLat: 0, maxLat: 0, minLng: 0, maxLng: 0,
   canvasWidth: WHITEBOARD_DEFAULTS.canvasWidth,
@@ -169,6 +219,65 @@ let canvas = null;
 let idMap = new ElementIdMap();
 let syncTimer = null;
 let disposed = false;
+
+// ---------- 🛡️【缺陷 2 修复（2026-10-07）】乐观写入的三件套状态 ----------
+//
+// 【背景】onBeforeUnmount 用「画布实时快照」整体覆盖 board.scene，会与
+//   「回收站恢复 → refreshDataFromDB → setScene」竞争：
+//   恢复已把库刷成新数据，但 React 尚未消化 setScene 时用户切走
+//   → 旧快照回覆盖 → 元素回退 isDeleted=true → 下次 runSync 再生回收站记录。
+//
+// 【解法】区分「乐观写」与「权威写」：
+//   · 乐观写 = 画布快照（onBeforeUnmount）→ 传 baseUpdatedAt，可能被 boardStore 拒绝
+//   · 权威写 = 回收站恢复 / 清理工具 → 不传 base，强制生效（不牺牲 T1 情况 1）
+//
+// ① lastKnownUpdatedAt：上一次从库读到 / 写库成功后的 board.updatedAt（版本基线）
+// ② canvasDirty：画布上是否有「尚未落库的用户改动」
+// ③ saving：进程内写互斥，避免乐观写与权威写并发（DeepSeek 第 17 轮 §四已批）
+let lastKnownUpdatedAt = undefined;   // undefined = 未知基线（此时不做校验，退化为旧行为）
+let canvasDirty = false;
+let saving = false;
+
+// ⚠️ setScene 回灌期间，Excalidraw 会**回抛一次 onChange**（这是「库→画布」方向，
+//   不是用户改动）。用这个标记把该次回抛排除，否则 canvasDirty 会被误置 true
+//   → t1 场景（恢复后立刻关）就会走权威写 → 脏数据又回灌。
+//   看内容判断不可靠（恢复前后内容可能完全相同），故用「短窗口锁定」。
+let sceneApplyLock = 0;
+const SCENE_APPLY_LOCK_MS = 300;      // 只需覆盖 Vue→React→onChange 的帧级延迟
+
+/**
+ * 权威写：从库里读回权威数据，再用「这份数据」覆写 board 记录。
+ *
+ * 【为什么读-改-写】
+ *   本函数只刷新 scene（恢复的元素），但 board 记录是**整条覆盖**的。
+ *   若直接 saveBoard({ scene }) 而不带上 name/bounds/canvas，
+ *   saveBoard 会走 `existing` 兜底 —— 那些字段能保住，但 appState 会被写成 `{}`
+ *   （saveBoard 对 appState 是 `board.appState || {}`，没有 existing 兜底）。
+ *   → 必须先 getBoard() 取出完整记录，避免「权威写顺手清掉 appState」。
+ *
+ * 【为什么先写库、再刷画布】
+ *   setScene 会触发一次 onChange；先写库可保证此刻库已是最终状态，
+ *   后续即使有延迟回抛，也不会把库改回旧值。
+ *
+ * @param {Array} [sceneOverride] 不传则用当前库里的 scene
+ * @returns {Promise<{saved:boolean, reason?:string}>}
+ */
+const persistBoardAuthoritative = async (sceneOverride = undefined) => {
+  if (!boardId.value) return { saved: false, reason: 'no-board-id' };
+  const current = await getBoard(boardId.value);
+  const result = await saveBoard({
+    boardId: boardId.value,
+    fileId: safeFileId(),
+    name: boardName.value,
+    bounds,
+    canvas,
+    scene: Array.isArray(sceneOverride) ? sceneOverride
+      : ((current && current.scene) || []),
+    appState: (current && current.appState) || {}
+  });   // ⚠️ 不传 baseUpdatedAt = 权威写，强制生效（可能覆盖更新的库版本，这是设计意图）
+  if (result && result.saved) lastKnownUpdatedAt = result.updatedAt;
+  return result;
+};
 
 // UIOptions：精简掉本项目用不到的入口（协作、库、导出图片等）
 const uiOptions = {
@@ -183,6 +292,39 @@ const uiOptions = {
 const lastSyncText = computed(() =>
   lastSyncAt.value ? new Date(lastSyncAt.value).toLocaleTimeString('zh-CN') : ''
 );
+
+// ---------- 🧩 面板数据（块 3/4 新增，2026-10-06）----------
+// 数据源 registeredList：由 refreshRegisteredList() 从
+//   elementSync.getRegisteredElements(safeFileId()) 填充，内容 = annotations 表完整记录。
+//
+// 【字段同构性已核实】面板（LayerListPanel / InfoPanel）需要的字段白板 annotation 全部具备：
+//   id / title / objectName / group / lat / lng  → buildAnnotation（elementSync.js:181-200）
+//   wbElementId                                  → :192 恒写 element.id
+// ⚠️ layerRef 不存在（Excalidraw 元素不是 Leaflet 图层），不注入：
+//   面板的「点击图层」路径在白板侧用不到，定位统一走 @locate 事件 + wbElementId。
+const wbPanelLayers = computed(() =>
+  registeredList.value.map(item => ({
+    ...item,
+    // 🔑 wbElementId 是「面板 ↔ 画布元素」的唯一桥：
+    //   列表定位（whiteboardLocate → scrollToElement）与画布点选反查（syncSelectedToInfoPanel）
+    //   都靠它。库中恒存在（rebuildIdMap 就是靠它重建映射，elementSync.js:71-76），
+    //   这里做一次兜底只是为了防御历史脏数据。
+    wbElementId: item.wbElementId || null
+  }))
+);
+
+// 分组名：白板自建分组（'默认' + annotations 里出现过的所有非空 group，去重）
+// （PresetGroups / 热点等由 LayerListPanel 内部自行补齐，此处只管白板数据）
+// ✅ 直接读库值即可：elementSync 更新分支现已同步 customData.group → annotations.group
+//    （见 elementSync.js 更新分支的「分组同步」注释），无需再垫一层画布侧覆盖值。
+const wbPanelGroups = computed(() => {
+  const set = new Set(['默认']);
+  registeredList.value.forEach(l => {
+    const g = String(l.group || '').trim();
+    if (g) set.add(g);
+  });
+  return Array.from(set);
+});
 
 // ---------- 元素同步 ----------
 
@@ -272,14 +414,30 @@ const runSync = async (elements) => {
       fileId: safeFileId(),
       // 🚨【防御层 2】只有画布确实就绪时才允许删除分支；否则 elementSync 内部整块跳过。
       //   双保险：WhiteboardTool 已用 canvasReady 守卫，这里再显式声明一次意图。
-      // 🩹 本轮加强：再加一条「本轮确有活元素」前置条件 —— 空场景绝不传 true。
       //   注意：这是**调用侧新增的额外条件**，elementSync 内部的 allowDelete 门控
       //   一行未动，仍是防误删的最后一道保险（两层独立防护，不相互替代）。
-      allowDelete: alive.length > 0
+      //
+      // 🩹 第 6 轮修正（2026-10-07，DeepSeek 裁决）：
+      //   ❌ 旧值 `alive.length > 0` 是**错的** —— 它把两种情况混为一谈：
+      //        · 首帧空回抛（**应禁止**）：Excalidraw 还没消化 initialData，从未见过非空
+      //        · 用户删光（**应允许**）：之前必然见过非空，此时 alive.length 恰好也是 0
+      //      结果「删光所有元素」→ alive.length===0 → allowDelete:false → 删除被静默吞掉 💥
+      //   ✅ 正确判据是 firstNonEmptyChangeSeen（「Excalidraw 已消化完 initialData」的唯一可靠证明）：
+      //        · 从未见过非空 → false → allowDelete:false → 首帧空回抛不误删 ✅
+      //        · 用户删光     → true  → allowDelete:true  → 正确归档进回收站 ✅
+      //      与闸门③ 的置位语义完全一致（闸门③ 保证它只在「首次见到非空」时置 true）。
+      //   ⚠️ 闸门③ 的拦截条件（:320-329）**一字未动** —— 它才是「首帧空回抛」的唯一防线：
+      //      进入本行时若 firstNonEmptyChangeSeen===false，说明闸门③ 已判定不存在误删风险。
+      allowDelete: firstNonEmptyChangeSeen
     });
     stats.registered = idMap.size;
     stats.skipped = result.skipped;
     lastSyncAt.value = Date.now();
+    // 🛡️【缺陷 2 修复（2026-10-07）】元素级增量已落库（annotations/documents/recyclebin），
+    //   但 board.scene 的落库仅在 onBeforeUnmount / restoreElementsToBoard / 清理工具。
+    //   本轮同步完成后，画布上的元素状态已被持久化 → 清掉脏标记，
+    //   避免「改了又改回原样」之类的场景仍触发 onBeforeUnmount 的写入。
+    canvasDirty = false;
     await refreshRegisteredList();
   } catch (e) {
     console.error('[WhiteboardTool] 元素同步失败:', e);
@@ -307,9 +465,57 @@ const refreshRegisteredList = async () => {
   } catch (e) {
     registeredList.value = [];
   }
+  // 🧪【临时监控日志，2026-10-07】仅用于排查「画布看到 4 个 / 实际登记 6 个」的坐标重叠假设。
+  //   开关：控制台执行 `window.__WB_MONITOR__ = true` 即开启（默认关闭，不影响正常使用）。
+  //   输出每个登记元素在**画布坐标系**下的位置与尺寸（wbX/wbY/wbW/wbH）+ 反算的经纬度。
+  //   ⚠️ 用途仅为观察，不改任何逻辑；排查结束后应整块移除（见 MEMO 待办）。
+  if (window.__WB_MONITOR__) {
+    console.log('[监控] 场景快照:');
+    registeredList.value.forEach(item => {
+      console.log(item.id, 'wbX=' + item.wbX, 'wbY=' + item.wbY, 'wbW=' + item.wbW, 'wbH=' + item.wbH, 'lat=' + item.lat, 'lng=' + item.lng);
+    });
+  }
 };
 
 const safeFileId = () => props.fileId || 'legacy-file';
+
+/**
+ * 🛡️【C 方案】从库里读出的 scene 在送进画布前，先做元素完整性校验。
+ *
+ * 【为什么必须做（2026-10-07 事故，MEMO 坑#14）】
+ *   降级重建路径曾产出 `type:'text'` 却无 `text`/`fontFamily` 的畸形元素 →
+ *   写进 board.scene → 下次加载时 Excalidraw 渲染它抛 TypeError →
+ *   **React error boundary 捕获 → 整个画布组件树不再更新 → 画布永久挂起**
+ *   （「正在加载绘图...」不恢复），且用户连「选中+Delete」自救路径都没有。
+ *
+ * 【设计原则】画布必须对「坏元素」免疫，而不是假设「坏元素不存在」。
+ *   单个元素的残缺，绝不能拖垮整块画布。
+ *
+ * 【行为】
+ *   · 残缺元素**从返回数组中剔除** → 不进 initialData → 画布正常渲染其余元素
+ *   · 缺损详情 `console.warn` 列出（id + type + 缺的字段），便于定位数据来源
+ *   · ⚠️ **不写库、不删 annotations** —— 元素记录仍在信息数据库可见，
+ *     用户可自行决定是否清理（真删要走正常 UI，如信息数据库 / 图形列表）
+ *
+ * @param {Array} rawScene - board.scene（可能含残缺元素）
+ * @returns {Array} 可安全渲染的元素数组
+ */
+const sanitizeSceneFromDB = (rawScene) => {
+  const raw = Array.isArray(rawScene) ? rawScene : [];
+  if (raw.length === 0) return [];
+  const { safe, dropped } = filterBrokenElements(raw);
+  if (dropped.length > 0) {
+    // ⚠️ 用 console.warn（非 debug）：这是「护住画布」的安全哨兵，必须可见
+    console.warn(
+      `[白板] 🛡️ 已隔离 ${dropped.length} 个残缺元素（不入画布，防渲染崩溃）：`
+    );
+    dropped.forEach(d => {
+      console.warn(`[白板]   - id=${d.id} type=${d.type} 缺字段=[${d.missing.join(', ')}]`);
+    });
+    console.warn('[白板] 这些元素在信息数据库中仍在，可手动清理；本条仅内存剔除，未改库。');
+  }
+  return safe;
+};
 
 // ---------- Excalidraw 事件 ----------
 
@@ -332,9 +538,387 @@ const handleApiReady = async (nextApi) => {
 };
 
 // 画布变化 → 防抖同步元素（不做全量 saveAllLayers 覆盖，由 elementSync 增量处理）
-const handleChange = (elements) => {
+// 🧩 块 4：补上第 2 个参数 appState —— 画布点选联动的数据源。
+//   桥接链已核实：excalidrawBridge.js:51 `onChange: (elements, appState) => emit('change', ...)`
+//                → ExcalidrawBoard.vue:52 `emit('change', elements, appState)`
+//   两处**本就在透传 appState**，故只需在此处接住，桥接层一行未改。
+const handleChange = (elements, appState) => {
   console.debug('[诊断-HT] handleChange 收到:', Array.isArray(elements) ? elements.length : '(非数组)');
+  // 🛡️【缺陷 2 修复（2026-10-07）】标记「画布有未落库改动」。
+  //   用途：onBeforeUnmount 据此分流 ——
+  //     canvasDirty=false → 乐观写（可被版本校验拒绝，防脏数据回灌）
+  //     canvasDirty=true  → 权威写（用户真改了东西，必须保住，不能被拒）
+  //   ⚠️ setScene 回灌期间 Excalidraw 也会回抛一次 onChange（库→画布方向），
+  //      那不是用户改动 → 用 sceneApplyLock 短窗口排除，否则 t1 场景会被误判为 dirty。
+  if (Date.now() - sceneApplyLock > SCENE_APPLY_LOCK_MS) {
+    canvasDirty = true;
+  } else {
+    console.debug('[诊断-HT] handleChange → 属 setScene 回灌回抛，不置 canvasDirty');
+  }
+  // ① 元素同步（原有逻辑，一行未动）
   scheduleSync(elements);
+  // ② 画布点选 → 信息栏联动（新增）
+  syncSelectedToInfoPanel(appState);
+};
+
+// ---------- 🧩 画布点选 ↔ 信息栏 / 面板联动（块 4 新增）----------
+
+/**
+ * 画布选中 → 信息栏联动
+ *
+ * 【数据链】
+ *   appState.selectedElementIds（形如 { 'elId': true, 'elId2': false }）
+ *     → 取第一个 true 的 key（多选时取第一个，已定）
+ *     → 用 wbElementId 反查 wbPanelLayers（**不依赖 idMap**，解耦）
+ *     → WhiteboardPanels.selectLayer → InfoPanel.selectLayer（defineExpose，InfoPanel.vue:195）
+ *     → InfoPanel.selectedLayer 更新 → 渲染「对象名称 / fields」
+ *
+ * 【🚨 边界：选中集合变空时**绝不**调 selectLayer(null)】
+ *   InfoPanel.vue:173-174 首行即 `layer.objectName` → 传 null 立刻 TypeError。
+ *   InfoPanel 自身已有「layer 从 layers 中消失才清空」的 watch（:189-193），
+ *   退出选中时面板保持上次内容 —— 这是**有意保留**的行为，不是 bug。
+ */
+const syncSelectedToInfoPanel = (appState) => {
+  const sel = (appState && appState.selectedElementIds) || {};
+  const firstId = Object.keys(sel).find(k => sel[k]);
+  if (!firstId) return;   // ← 见上方边界说明：空选中直接返回，不清空面板
+  if (!wbPanelsRef.value || typeof wbPanelsRef.value.selectLayer !== 'function') return;
+  const layer = wbPanelLayers.value.find(l => l.wbElementId === firstId);
+  if (!layer) return;
+  wbPanelsRef.value.selectLayer(layer);
+};
+
+/**
+ * 列表双击 / 收藏夹定位 → 画布滚动到该元素
+ * 【数据链】LayerListPanel emit('locate', item)（:303 双击 / :308 收藏夹）
+ *   → WhiteboardPanels 上抛 → 此处 → boardRef.scrollToElement(wbElementId)
+ * 【为什么不用 item.layerRef.openPopup()】
+ *   白板侧元素不是 Leaflet 图层，**不存在 layerRef**（见 wbPanelLayers 注释）。
+ *   因此走 ExcalidrawBoard.vue:77-86 现成的 scrollToElement（内部 api.scrollToContent）。
+ */
+const whiteboardLocate = (item) => {
+  const wbElementId = item && item.wbElementId;
+  if (!wbElementId || !boardRef.value || typeof boardRef.value.scrollToElement !== 'function') return;
+  boardRef.value.scrollToElement(wbElementId);
+};
+
+/**
+ * 信息栏「保存」→ v1 是 **no-op**（不写库，避免双写绕过指纹去重）
+ *
+ * 【载荷形态已核实】InfoPanel.vue:202 `emit('update-layer', { ...updatedLayer, toolId })`
+ *   → 载荷是「改过的图层对象 + toolId」，不是 { id }，故下面日志取 payload.id 是取 annotation id。
+ *
+ * 【为什么不写库】字段持久化的唯一链路是 runSync → elementSync（含指纹去重）；
+ *   白板侧再开一个写库入口会造成双写。若将来要让信息栏改名立刻反映到画布显示名，
+ *   应在这里补 customData 镜像（走 mutateElement + updateScene），而不是直接写 annotations。
+ */
+const handleWbLayerUpdate = (payload) => {
+  console.debug('[白板面板] update-layer（v1 不写库，走 runSync 单一入口）:', payload && payload.id);
+};
+
+/**
+ * 分组过滤 → v1 是 **no-op**
+ * 【依据】地图侧 handleFilterGroup → applyDisplayForView（BaseMapTool.vue:893-896），
+ *   它操作的是 Leaflet 的 editableLayers 容器；白板画布无对应「图层显隐」概念。
+ *   v1 范围已明确排除「分组过滤联动（画布↔面板↔列表）」→ 只记日志。
+ */
+const handleWbFilterGroup = (group) => {
+  console.debug('[白板面板] filter-group（v1 不联动画布）:', group);
+};
+
+/** 新增分组：v1 只在 UI 层生效（分组名由 wbPanelGroups 从 annotations 派生，不单独存分组表） */
+const handleWbAddGroup = (name) => {
+  console.debug('[白板面板] add-group:', name);
+};
+
+/** 删除分组：v1 同上，no-op（不批量改 annotations.group，避免绕过 syncScene 指纹去重） */
+const handleWbRemoveGroup = (name) => {
+  console.debug('[白板面板] remove-group:', name);
+};
+
+/**
+ * 列表「删除」→ **只打 isDeleted 标记**，不从 scene 物理移除、不手动写回收站
+ *
+ * 【🚨 为什么必须这样（上一轮我写错了，此处是修正）】
+ *   上一版做的是「先 moveToRecycleBin(..., null) 再 filter 物理移除」→ 恢复失效。
+ *   失效链（已逐行核实）：
+ *     ① 物理移除后元素**不在 scene** 里了；
+ *     ② 下一次 onChange → runSync 删除分支（elementSync.js:260-295）自己会调
+ *        `moveToRecycleBin`（:281），其第 5 参 `wbElementRaw` 取自
+ *        `rawById`（:265-266）= **由当前 scene 列表建立的索引**；
+ *        元素已被我移除 → `rawById.get(elementId)` = **undefined** → 传 null；
+ *     ③ 恢复时（elementSync.js:517-544）：
+ *        · 情况 1（:521-529）要求「元素仍在 scene 且 isDeleted」→ 已被我移除，进不去；
+ *        · 情况 2（:534-541）要求 `rawMap.get(elementId)` 有值 → 是空 Map，进不去；
+ *        · 于是落 `result.missing`（:543）→ 画布上**什么都不出现**。
+ *   ⇒ 我上轮注释里写的「先改画布会被 onChange 抢跑导致回收站拿不到快照」**不成立**：
+ *     rawById 就是从 scene 建的索引，物理移除才是拿不到 raw 的真正原因。
+ *
+ * 【正确做法：只打标记】
+ *   保持元素留在 scene 数组里、仅置 isDeleted=true（Excalidraw 便不再渲染它）。
+ *   随后 runSync 删除分支按「集合差」判定删除 → 正确带 wbElementRaw 入回收站；
+ *   恢复时命中**情况 1**（擦除 isDeleted 标记）→ 元素真正回到画布。
+ *
+ * 【🚨 唯一入口原则】
+ *   删除的判定与落库**唯一入口**是 runSync 的 allowDelete 门控（MEMO 坑#16）。
+ *   此处只改画布、不写库 → 不构成第二个删除入口。
+ *   ❌ 不要在这里补传 wbElementRaw，也不要在恢复侧改「物理重建」。
+ *
+ * 【载荷形态】LayerListPanel.vue:278 `emit('delete-layer', m)`，m 是列表项完整对象
+ *   （`{ ...annotation, wbElementId }`）→ 确实带 wbElementId / id / lat / lng。
+ *   ⚠️ 与 `update-layer-group` 的载荷形态**不同**（后者是 `{ id, group }` 且无 wbElementId），
+ *      两者不可互换处理。
+ */
+const handleWbDeleteElement = (item) => {
+  const wbElementId = item && item.wbElementId;
+  if (!item || !item.id || !wbElementId) return;
+
+  const el = boardRef.value?.getApi?.() || api.value;
+  if (!el || typeof el.getSceneElements !== 'function' || typeof el.updateScene !== 'function') {
+    console.warn('[白板面板] 删除失败：画布 API 未就绪');
+    return;
+  }
+
+  // 🚨 只打 isDeleted 标记：不物理移除、不手动写回收站。
+  //   Excalidraw 对 isDeleted=true 的元素不渲染，视觉上等同「已删除」。
+  //   后续 runSync 会把它正确归档进回收站（含 wbElementRaw），恢复时走情况 1。
+  const next = el.getSceneElements().map(e => {
+    if (e && e.id === wbElementId) {
+      return { ...e, isDeleted: true, updated: Date.now() };
+    }
+    return e;
+  });
+  el.updateScene({
+    elements: next,
+    appState: { selectedElementIds: {} },   // 防止选中态残留在已删除元素上
+    captureUpdate: CaptureUpdateAction.IMMEDIATELY
+  });
+  console.debug('[白板面板] 已标记删除（等待 runSync 归档进回收站）:', wbElementId);
+};
+
+// 🧪【临时调试，2026-10-07】清理幽灵元素：按钮 loading 态
+const ghostCleaning = ref(false);
+
+/**
+ * 🧪【临时调试工具】清理「幽灵元素」+ 「回收站残留记录」（2026-10-07）
+ *
+ * 【要解决的现象】三处失去统一（用户实测）：
+ *   board.scene = 6 个 / annotations = 6 条 / recyclebin = 2 条
+ *   → 那 2 条回收站记录（WB.00036 / WB.00037）对应的元素**还活着**（在 scene 与 annotations 里）
+ *     → 病征是「**元素活着、回收站还有记录**」（二次删除残留），
+ *       而不是「scene 有、annotations 无」。
+ *
+ * 【为什么用「物理移除」而不是打 isDeleted】
+ *   常规删除路径（唯一入口 runSync）之所以只打标记，是为了让 rawById 能取到
+ *   完整原始元素、随回收站留档（wbElementRaw），供恢复时精确还原。
+ *   但本工具是**清理已确认的脏数据**、明确不要恢复 → 不需要留档，
+ *   物理移除更彻底：一步到位，不会在下一次同步里再次被判定/复活。
+ *
+ * 【两件事必须解耦】（DeepSeek 第 16 轮裁决 · bug 1）
+ *   ① scene 幽灵判据：只决定「要不要动 board.scene」
+ *   ② 回收站残留清理：**无条件执行**，与 ① 的结果无关
+ *   ⚠️ 旧版 `if (ghosts.length === 0) return;` 会让 ② 永远执行不到。
+ *
+ * 【判据统一用 wbElementId 桥接】（DeepSeek 第 16 轮裁决 · 不可再用 annotationId）
+ *   scene[].id 是 Excalidraw nanoid；recyclebin.annotationId 是 WB.xxx → 不同源。
+ *   活性判据 = `record.layer.wbElementId ∈ sceneIds`：
+ *     · 在 scene → 元素活着 → 该记录是残留 → 清
+ *     · 不在 scene → 真·已删 → 回收站是恢复唯一凭据 → **保留**
+ *
+ * 【为什么先写 board.scene、再调 refreshDataFromDB】
+ *   refreshDataFromDB 会 getBoard() 重新读库并 setScene 刷回画布。
+ *   若先刷后写，画布上仍是 6 个 → 下一次 onChange 又把这 2 个当活元素。
+ *   ⚠️ 注意：本函数**不碰 annotations**（幽灵本就不在其中），
+ *      故不存在「物理移除 → runSync 集合差 → 二次写回收站」的链
+ *      （该链只对 idMap 里已登记的 id 成立）。
+ *
+ * ⚠️ 排查结束后整块删除（含按钮 / 导入 / 样式）。
+ */
+const handleCleanGhostElements = async () => {
+  if (ghostCleaning.value) return;
+  ghostCleaning.value = true;
+  try {
+    // ---------- 1. 取当前画布场景（权威数据：以画布为准）----------
+    if (!canvasReady.value || !boardRef.value?.getScene) {
+      console.warn('[临时调试] 画布未就绪，已中止');
+      return;
+    }
+    const snap = boardRef.value.getScene();
+    const scene = Array.isArray(snap && snap.scene) ? snap.scene.slice() : [];
+
+    // ---------- 2. 取 annotations 的 id / wbElementId 集合 ----------
+    const layers = await getAllLayers(WB_TOOL_ID, safeFileId()) || [];
+    const knownIds = new Set();
+    layers.forEach(l => {
+      if (l && l.id) knownIds.add(l.id);
+      if (l && l.wbElementId) knownIds.add(l.wbElementId);
+    });
+
+    // ---------- 3. 找出「幽灵」：在 scene 里、但 annotations 里查无此 id ----------
+    //   ⚠️ 同时排除 isDeleted=true 的：那些是「正常删除但未落库」的残留，
+    //      属另一类问题（由下次 runSync 归档），本工具不越界处理。
+    const ghosts = scene.filter(e => e && e.id && !e.isDeleted && !knownIds.has(e.id));
+    const ghostIdSet = new Set(ghosts.map(e => e.id));
+
+    console.log('[临时调试] 幽灵元素扫描：scene 共', scene.length,
+      '| annotations 共', layers.length, '| 幽灵', ghosts.length);
+    ghosts.forEach(e => console.log('   🧟 幽灵:', e.id, '| type=' + e.type,
+      '| x=' + Math.round(e.x) + ' y=' + Math.round(e.y)));
+
+    // ---------- 4. 物理移除（无幽灵时保持原数组，仍继续走后面的清理）----------
+    //   🐛【bug 1 修复，2026-10-07】旧版在此处 `if (ghosts.length === 0) return;`
+    //      → 直接把后面的 clearRecycleBin 短路掉，「清回收站」永远执行不到。
+    //      现在两件事**解耦**：幽灵判据只决定「要不要动 scene」，清回收站无条件执行。
+    //   ⚠️ 若幽灵为 0，则**不写 board.scene**：避免用一份等价快照去覆盖库，
+    //      白白刷新 saveBoard.updatedAt（减少与 onBeforeUnmount 的竞争面）。
+    const hasGhost = ghosts.length > 0;
+    const nextScene = hasGhost ? scene.filter(e => !(e && ghostIdSet.has(e.id))) : scene;
+
+    // ---------- 5. 写回白板记录（权威写，先落库，避免被后续 setScene 覆盖）----------
+    if (hasGhost) {
+      saving = true;
+      try {
+        // 🛡️【缺陷 2 修复（2026-10-07）】改用权威写 helper（不传 baseUpdatedAt → 强制生效），
+        //   并纳入 saving 互斥 —— 避免与 onBeforeUnmount 的乐观写并发。
+        //   ⚠️ helper 会先 getBoard() 取完整记录再覆写，避免本函数只传 scene 时
+        //      把 appState 写成空对象。
+        const res = await persistBoardAuthoritative(nextScene);
+        if (!res || !res.saved) {
+          console.warn('[临时调试] 权威回写未成功:', res && res.reason);
+        }
+      } finally {
+        saving = false;
+      }
+    }
+
+    // ---------- 6. 清「残留」回收站记录（与幽灵判据解耦，无条件执行）----------
+    //   🎯【判据统一用 wbElementId 桥接】（DeepSeek 第 16 轮裁决）
+    //     scene[].id 是 Excalidraw nanoid；recyclebin.annotationId 是 WB.xxx
+    //     → 两者**不同源**，直接比对恒不匹配。
+    //     唯一正确的活性判据：record.layer.wbElementId ∈ sceneIds
+    //       · 在 scene 里 → 元素还活着 → 该回收站记录是「二次删除残留」→ 可清
+    //       · 不在 scene 里 → 真·已删 → 回收站是恢复的唯一凭据 → **必须保留**
+    //   ⚠️ 用重建的 scene 判定（即物理移除后的结果）：被移掉的元素若在回收站有记录，
+    //      也会被正确判为「已不在 scene」而保留。
+    const sceneIds = new Set(nextScene.filter(e => e && e.id).map(e => e.id));
+    let records = [];
+    try {
+      records = await getAllRecycled(WB_TOOL_ID) || [];
+    } catch (e) {
+      console.warn('[临时调试] 读取 WB 回收站失败，跳过清理:', e);
+    }
+    const stale = [];
+    const kept = [];
+    records.forEach(r => {
+      const wbId = r && r.layer ? r.layer.wbElementId : null;
+      if (wbId && sceneIds.has(wbId)) stale.push(r);   // 元素活着 → 残留
+      else kept.push(r);                                // 真已删 / 无桥接id → 保留
+    });
+
+    console.log('[临时调试] 回收站扫描：共', records.length,
+      '条 | 残留可清', stale.length, '条 | 保留', kept.length, '条');
+    stale.forEach(r => console.log('   🧹 残留记录:', r.annotationId,
+      '| 元素仍在 scene（' + ((r.layer || {}).wbElementId || '') + '）'));
+    kept.forEach(r => console.log('   🔒 保留记录:', r.annotationId,
+      '| 元素已不在 scene（' + ((r.layer || {}).wbElementId || '无桥接id') + '）'));
+
+    // ⚠️ purgeFromRecycleBin 的签名是 (toolId, fileId, annotationId)，
+    //   不是传记录对象 —— 逐条按记录自身的 fileId 清（兼容历史 fileId 差异）。
+    for (const r of stale) {
+      try {
+        await purgeFromRecycleBin(WB_TOOL_ID, r.fileId || safeFileId(), r.annotationId);
+      } catch (e) {
+        console.warn('[临时调试] 清除残留记录失败:', r.annotationId, e);
+      }
+    }
+
+    // ---------- 7. 刷新：重读库 + 重建 idMap + setScene 刷回画布 ----------
+    await refreshDataFromDB();
+
+    console.log('[临时调试] ✅ 清理完成：物理移除', ghosts.length, '个幽灵元素，清掉',
+      stale.length, '条回收站残留记录（保留', kept.length, '条真·已删记录）');
+  } catch (e) {
+    console.error('[临时调试] 清理幽灵元素失败:', e);
+  } finally {
+    ghostCleaning.value = false;
+  }
+};
+
+/**
+ * 列表「改组」→ 分组双写（customData 镜像 + 画布刷新）
+ *
+ * 【为什么必须走 mutateElement + updateScene（MEMO R5 硬约束）】
+ *   mutateElement.d.ts 明确「does not trigger re-render」——
+ *   它只改对象引用，Excalidraw 不会重绘、也不会触发 onChange。
+ *   → 必须紧接一次 updateScene({ elements, captureUpdate: IMMEDIATELY }) 才会落画面。
+ *
+ * 【customData 只镜像 { name, group }】
+ *   fields（500 个空槽的对象）**留在 annotations 表**，不进 scene JSON：
+ *   500 × N 元素会把场景体积放大到不可接受，且 fields 本就是库侧信息。
+ *
+ * 【为什么不触发指纹去重误判】
+ *   buildFingerprint 的 payload 不含 group（elementSync.js）→
+ *   改分组不会被判为「内容变更」而注销重建指纹，走的是纯 UI 层变更。
+ */
+const handleWbUpdateGroup = (payload) => {
+  // 🚨 载荷形态已核实：LayerListPanel.vue:268 发出的是 `{ id, group }`，
+  //   **id = annotation id（WB.00012），载荷里没有 wbElementId**！
+  //   画布元素 id 是 Excalidraw 生成的独立 id，两者不同 → 必须经 wbPanelLayers 反查。
+  //   （我上一版误以为载荷是列表项对象而直接取 payload.wbElementId，会静默 no-op。）
+  const annotationId = payload && payload.id;
+  const group = payload && payload.group;
+  if (!annotationId) return;
+
+  const layerItem = wbPanelLayers.value.find(l => l.id === annotationId);
+  const wbElementId = layerItem && layerItem.wbElementId;
+  if (!wbElementId) {
+    console.warn('[白板面板] 改组失败：未找到该 annotation 对应的画布元素', annotationId);
+    return;
+  }
+
+  const el = boardRef.value?.getApi?.() || api.value;
+  if (!el || typeof el.getSceneElements !== 'function' || typeof el.updateScene !== 'function') {
+    console.warn('[白板面板] 改组失败：画布 API 未就绪');
+    return;
+  }
+  const current = el.getSceneElements();
+  const elIndex = current.findIndex(e => e && e.id === wbElementId);
+  if (elIndex === -1) {
+    console.warn('[白板面板] 改组失败：画布上没有该元素', wbElementId);
+    return;
+  }
+  const target = current[elIndex];
+
+  const nextCustom = {
+    ...(target.customData || {}),
+    // customData 只镜像 { name, group } —— fields 留在 annotations 表，
+    // 否则 500 个空槽对象 × N 元素会把 scene JSON 放大到不可接受
+    name: (target.customData && target.customData.name) || layerItem.title || layerItem.objectName || '',
+    group: group == null ? '' : String(group)
+  };
+  // ⚠️ 用 mutateElement（MEMO R5）：它只改引用、不触发重绘，故必须紧跟 updateScene
+  const patched = mutateElement(target, { customData: nextCustom });
+  const next = current.slice();
+  next[elIndex] = patched;
+  el.updateScene({ elements: next, captureUpdate: CaptureUpdateAction.IMMEDIATELY });
+
+  // 🚨 此处**不**手动调 runSync。
+  //   上一版写了 `await runSync(boardRef.getScene().scene)`，属「多此一举」，已移除，理由有三：
+  //   ① updateScene 本身就会触发 onChange（captureUpdate 只影响 undo 栈捕获，不影响 onChange），
+  //      而 onChange → scheduleSync 已有 800ms 防抖同步 → 手动再同步一次 = **重复触发 runSync**，
+  //      既浪费（每次改组都全量重建指纹）又可能并发交错。
+  //   ② 与 handleWbDeleteElement 是**同一类错误**：面板侧手动调用底层同步/落库函数，
+  //      等于在「唯一入口」之外另开一个入口（删除侧已按裁决回滚，这里一并统一）。
+  //   ③ 一致性不依赖它：防抖同步跑完后 refreshRegisteredList() 会刷新列表，
+  //      customData.group → annotations.group 由 elementSync 统一处理。
+  //   → 要让 UI 立刻反映，正确做法是等下一次 runSync，而不是在这里抢跑。
+  //   ④ 但列表必须立刻反映（否则用户以为改组失败）→ 主动刷一次列表。
+  //      ⚠️ 这里**只读库、不写库**，不构成第二个写入口：
+  //      elementSync 更新分支现已同步 customData.group → annotations.group，
+  //      故 refreshRegisteredList() 读到的就是新分组。
+  //      （曾用「画布侧 override 缓存」垫过一层，现库值已正确 → 已按裁决移除，少一层隐患。）
+  refreshRegisteredList();
+  console.debug('[白板面板] 已改组:', wbElementId, '→', group);
 };
 
 const locateElement = async (item) => {
@@ -456,9 +1040,14 @@ onMounted(async () => {
     const board = await ensureDefaultBoard();
     boardId.value = (board && board.boardId) || WB_LEGACY_BOARD_ID;
     boardName.value = await getBoardName();
+    // 🛡️【缺陷 2 修复（2026-10-07）】记录版本基线：本次读到的库版本。
+    //   onBeforeUnmount 的「乐观写」会带上它做 CAS 校验（库被别人改过则拒绝写入）。
+    lastKnownUpdatedAt = (board && board.updatedAt) || undefined;
+    canvasDirty = false;   // 刚加载，画布内容 = 库内容，无未落库改动
 
     // 3. 还原场景到画布
-    initialScene.value = (board && Array.isArray(board.scene)) ? board.scene : [];
+    // 🛡️【C 方案】先做元素完整性校验：剔除残缺元素，避免单元素毒死整个画布（MEMO 坑#14）
+    initialScene.value = sanitizeSceneFromDB(board && board.scene);
     initialAppState.value = (board && board.appState) || {};
     // 🚨【闸门③】记录场景活元素数基线（供 runSync 判断"空回抛"是否异常）
     sceneAliveBaseline = initialScene.value.filter(e => e && !e.isDeleted).length;
@@ -495,19 +1084,71 @@ onBeforeUnmount(async () => {
   disposed = true;
   if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
   unregisterRefreshHook();
-  // 关闭前兜底：把当前场景整体落库（元素级同步已由防抖逻辑处理）
+
+  // ---------- 关闭前兜底保存（🛡️ 缺陷 2 修复：按 canvasDirty 分流）----------
+  //
+  // 【旧行为的问题】无条件用「画布实时快照」整体覆盖 board.scene：
+  //   · t1 恢复后立刻关 → 画布旧快照回覆盖恢复后的新数据 → 元素回退 isDeleted=true
+  //     → 下次 runSync 又写回收站 → 脏数据再生（本轮要修的根因）
+  //   · t3 无操作关闭 → 白刷 updatedAt，无意义地把版本推高
+  //
+  // 【新行为】把「写」按画布是否有未落库改动分成两类（DeepSeek 第 17 轮 §一裁决）：
+  //   · canvasDirty=false（画布无新改动）→ **乐观写**：传 baseUpdatedAt
+  //       若库在此期间被别人改过（如恢复的权威写）→ boardStore 拒绝 → 不覆盖 ✅
+  //       这正是 t1 的解：恢复已把库刷新，旧快照被拒，脏数据不再回灌。
+  //   · canvasDirty=true（用户真改了画布）→ **权威写**：不传 baseUpdatedAt
+  //       保证用户改动不被吞（t2）。⚠️ 代价：此时若库更新（恢复）会被覆盖 ——
+  //       但这是**用户真实意图**优先，且该场景需「恢复后立刻又画了新东西再关」，概率极低。
+  //
+  // 另加 saving 互斥：若此时 refreshDataFromDB 的权威写正在进行，
+  // 让路（不并发写同一条记录），避免「读-改-写」交错产生半新旧状态。
   try {
+    if (saving) {
+      console.warn('[WhiteboardTool] 检测到并发写入进行中，跳过卸载前保存');
+      return;
+    }
     const snap = boardRef.value?.getScene?.();
-    if (snap && boardId.value) {
-      await saveBoard({
-        boardId: boardId.value,
-        fileId: safeFileId(),
-        name: boardName.value,
-        bounds,
-        canvas,
-        scene: snap.scene,
-        appState: snap.appState
-      });
+    if (!snap || !boardId.value) return;
+
+    if (!canvasDirty) {
+      // 🚪【放行优化】若基线未知（undefined，如 ensureDefaultBoard 未返回 updatedAt），
+      //   乐观写会退化成「无条件覆盖」—— 那就等于旧行为，失去了修复意义。
+      //   → 此时直接放弃写入：画布无改动，库里的内容**本来就是**权威版本，无需回写。
+      //   ⚠️ 只有在「基线未知」时放弃；基线已知则正常走乐观写（保留 t3 的兜底语义）。
+      if (lastKnownUpdatedAt === undefined) {
+        console.log('[WhiteboardTool] 基线未知且画布无改动 → 跳过卸载前写入（无可回写内容）');
+        return;
+      }
+      // 乐观写：带版本基线，库变过就自动放弃（防脏数据回灌）
+      saving = true;
+      try {
+        const res = await saveBoard({
+          boardId: boardId.value,
+          fileId: safeFileId(),
+          name: boardName.value,
+          bounds,
+          canvas,
+          scene: snap.scene,
+          appState: snap.appState
+        }, { baseUpdatedAt: lastKnownUpdatedAt });
+        if (res && res.saved) {
+          lastKnownUpdatedAt = res.updatedAt;
+          console.log('[WhiteboardTool] 卸载前乐观写成功');
+        } else if (res && res.reason === 'stale') {
+          console.warn('[WhiteboardTool] 🛡️ 卸载前写入被拒（库已更新，画布无改动）→ 已保留库版本');
+        }
+      } finally {
+        saving = false;
+      }
+    } else {
+      // 权威写：用户有未保存改动 → 必须保住
+      saving = true;
+      try {
+        const res = await persistBoardAuthoritative(snap.scene);
+        console.log('[WhiteboardTool] 卸载前权威写（画布有未落库改动）:', res && res.saved ? '成功' : '失败');
+      } finally {
+        saving = false;
+      }
     }
   } catch (e) {
     console.warn('[WhiteboardTool] 卸载前保存失败:', e);
@@ -527,17 +1168,36 @@ const refreshDataFromDB = async () => {
     if (boardId.value && boardRef.value?.setScene) {
       const board = await getBoard(boardId.value);
       if (board) {
-        const scene = Array.isArray(board.scene) ? board.scene : [];
+        // 🛡️【C 方案】恢复回写同样走完整性校验（恢复的元素也可能是坏数据）
+        const scene = sanitizeSceneFromDB(board.scene);
+        // 🛡️【缺陷 2 修复（2026-10-07）】先把「画布即将被库数据替换」这一事实落库，
+        //   再刷画布。理由：setScene 会触发一次 onChange 回抛，
+        //   若此刻有并发的 onBeforeUnmount 写入，它会拿着旧快照覆盖。
+        //   先写库 → 即使写入被旧快照覆盖，下面的基线也会因此变化而被 CAS 拒绝。
+        //   ⚠️ 这一步同时承担「清理 isDeleted 残留」的职责（权威写不做任何过滤外的加工）。
+        sceneApplyLock = Date.now();   // 开出回灌窗口：期间 onChange 不算用户改动
+        const wRes = await persistBoardAuthoritative(scene);
+        if (!wRes || !wRes.saved) {
+          console.warn('[WhiteboardTool] 权威回写未成功:', wRes && wRes.reason);
+        }
         boardRef.value.setScene(scene, board.appState || {});
         initialScene.value = scene;
         initialAppState.value = board.appState || {};
         stats.total = scene.filter(e => e && !e.isDeleted).length;
+        // 回灌后画布 = 库（这段是唯一权威），此刻无未落库改动
+        canvasDirty = false;
         // 🚨【防御层 1】恢复回写属于「权威数据」，必须显式重新打开同步开关，
         //   否则恢复的元素会因 canvasReady 仍为 false 而永远不同步。
         // 🩹 本轮：改用幂等入口，与另两个触发源共用同一套置位语义。
         armCanvasReady('回收站恢复回写（权威数据）');
       }
     }
+    // 🛡️【缺陷 2 修复（2026-10-07）】本函数是「库 → 画布」的回灌入口：
+    //   执行完后画布内容就是库内容（或至少库已是最新权威），故清掉脏标记。
+    //   ⚠️ 放在外层而不是 setScene 分支内：即使 boardRef 未就绪（没走 setScene），
+    //      「画布 = 库」的判断依然成立（画布上的元素本来就没变过）。
+    //   ⚠️ 若回灌后用户又改动画布 → handleChange 会重新置 true，语义正确。
+    canvasDirty = false;
   } catch (e) {
     console.warn('[WhiteboardTool] 刷新数据失败:', e);
   }
@@ -612,6 +1272,9 @@ defineExpose({
 .wb-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .wb-btn-primary { background: #1890ff; border-color: #1890ff; color: #fff; }
 .wb-btn-primary:hover:not(:disabled) { background: #096dd9; border-color: #096dd9; color: #fff; }
+/* 🧪【临时调试，2026-10-07】清理幽灵元素按钮（排查结束后随按钮一起删除） */
+.wb-btn-danger { background: #fff2f0; border-color: #ff4d4f; color: #cf1322; }
+.wb-btn-danger:hover:not(:disabled) { background: #ff4d4f; border-color: #ff4d4f; color: #fff; }
 
 /* ---------- 主体 ---------- */
 .wb-body { display: flex; flex: 1; min-height: 0; }

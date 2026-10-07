@@ -326,12 +326,23 @@ export const syncScene = async ({
         //    prev.objectName 存的也是同一套兜底值，语义一致。
         const renamed = name !== prev.objectName;
         const reshaped = geometry.wbW !== prev.wbW || geometry.wbH !== prev.wbH;
+        // 🆕 分组同步（2026-10-06 修，架构级 bug）：
+        //   本分支原先**完全同步 customData.group** —— group 只在新增分支（:370）
+        //   与 registerElement（:466）读取一次 → 之后改分组永远写不进 annotations.group。
+        //   后果：白板改组「会话内看着生效、重启后回旧值」，与地图侧（改分组即 forceAutoSave 落库）
+        //         待遇不一致。
+        //   ⚠️ 指纹安全：buildFingerprint 的 payload **不含 group**（见其实现），
+        //      故 regrouped 不参与下面 `if (moved || renamed)` 的注销/重登判定，
+        //      单独改组不会误触发指纹重建。
+        const currentGroup = getElementGroup(element);
+        const regrouped = currentGroup !== prev.group;
 
-        if (moved || renamed || reshaped) {
+        if (moved || renamed || reshaped || regrouped) {
           const next = {
             ...prev,
             title: name || prev.title,
             objectName: name || prev.objectName,
+            group: regrouped ? currentGroup : prev.group,
             wbX: geometry.wbX,
             wbY: geometry.wbY,
             wbW: geometry.wbW,
@@ -549,6 +560,92 @@ export const restoreElementsToBoard = async (boardId, wbElementIds, opts = {}) =
   return await finalizeRestore(board, scene, result, opts, canRebuild);
 };
 
+// ---------- 🛡️【C 方案】元素完整性校验（长期防御层）----------
+//
+// 【为什么需要】2026-10-07 类型事故（见 MEMO 坑#14）：
+//   降级重建曾产出 type:'text' 却无 text/fontFamily 的畸形元素，
+//   写进 board.scene 后，下次加载 Excalidraw 渲染该元素时抛 TypeError，
+//   **React error boundary 捕获 → 整个画布组件树不再更新 → 画布永久挂起**，
+//   用户连「选中删除」这条自救路径都没有。
+//
+// 【设计原则】画布必须对「坏元素」免疫，而不是假设「坏元素不存在」：
+//   单个元素的残缺，绝不能拖垮整块画布。
+//   故加载前逐元素校验，**残缺元素从送进 initialData 的数组里剔除**，
+//   但**不动库里的 annotations 数据**（数据仍可在信息数据库中被用户看到 / 手动清理）。
+
+// 各 type 的「必需字段」表 —— 只列 Excalidraw 会**直接读取且无兜底**的字段。
+//   text：renderText 读 text / fontFamily / fontSize（缺任一即崩）
+//   image：读 fileId 去 files 表取图（缺则崩）
+//   frame：读 children 数组（缺则崩）
+const REQUIRED_FIELDS_BY_TYPE = {
+  text: ['text', 'fontFamily', 'fontSize'],
+  image: ['fileId'],
+  frame: ['children']
+};
+
+/**
+ * 校验单个 Excalidraw 元素是否「字段完整、可安全渲染」
+ * @param {object} el - 待校验元素
+ * @returns {{ok:boolean, missing:string[]}} ok=false 时 missing 列出缺失/非法的字段
+ */
+export const validateElement = (el) => {
+  const missing = [];
+  if (!el || typeof el !== 'object') return { ok: false, missing: ['(非对象)'] };
+
+  // ① 共有字段：id / type 必须是非空字符串，x / y 必须是有限数值
+  if (typeof el.id !== 'string' || el.id === '') missing.push('id');
+  if (typeof el.type !== 'string' || el.type === '') missing.push('type');
+  if (!Number.isFinite(Number(el.x))) missing.push('x');
+  if (!Number.isFinite(Number(el.y))) missing.push('y');
+
+  // ② 类型专属必需字段
+  const required = REQUIRED_FIELDS_BY_TYPE[String(el.type || '')];
+  if (required) {
+    required.forEach(key => {
+      const v = el[key];
+      if (v === undefined || v === null) {
+        missing.push(key);
+      } else if (key === 'text' && typeof v !== 'string') {
+        // 允许空字符串（刚创建的空文本框），但必须是 string
+        missing.push(key);
+      } else if (key === 'children' && !Array.isArray(v)) {
+        missing.push(key);
+      }
+    });
+  }
+
+  return { ok: missing.length === 0, missing };
+};
+
+/**
+ * 批量校验场景元素，剔除残缺元素（🛡️【C 方案】入口）
+ *
+ * 【返回值】{ safe, dropped }
+ *   safe    —— 可安全送进 initialData 的元素数组（残缺者已剔除）
+ *   dropped —— [{ id, type, missing }]，供调用方 console.warn
+ *
+ * ⚠️ 只做「内存中剔除」，**不写库、不删 annotations** ——
+ *    用户在信息数据库里仍能看到这些元素记录，可自行决定是否清理。
+ */
+export const filterBrokenElements = (elements) => {
+  const list = Array.isArray(elements) ? elements : [];
+  const safe = [];
+  const dropped = [];
+  list.forEach(el => {
+    const r = validateElement(el);
+    if (r.ok) {
+      safe.push(el);
+    } else {
+      dropped.push({
+        id: (el && el.id) || '(无id)',
+        type: (el && el.type) || '(无type)',
+        missing: r.missing
+      });
+    }
+  });
+  return { safe, dropped };
+};
+
 // 收尾：兜底近似重建（降级路径）+ 落库
 const finalizeRestore = async (board, scene, result, opts, canRebuild) => {
   if (result.missing.length > 0 && canRebuild) {
@@ -562,10 +659,15 @@ const finalizeRestore = async (board, scene, result, opts, canRebuild) => {
       }
       const pt = latLngToCanvas({ lat: layer.lat, lng: layer.lng }, opts.bounds, opts.canvas);
       if (!pt) { rest.push(elementId); continue; }
-      // 近似重建：几何可恢复，**文字内容无法恢复**（这正是补丁 wbElementRaw 要解决的痛点）
-      scene.push({
+
+      // ---------- 🚨【A 方案】按 type 分派重建模板（2026-10-07 修复）----------
+      // 背景：旧代码**只换 type、不换字段集**，用一套矩形字段去造所有类型，
+      //   于是 wbType==='text' 时产出「type:'text' 但没有 text/fontFamily」的畸形元素
+      //   → 下次加载渲染崩溃 → 毒死整个画布（MEMO 坑#14）。
+      const wbType = String(layer.wbType || 'rectangle');
+      const rebuildBase = {
         id: elementId,
-        type: String(layer.wbType || 'rectangle'),
+        type: wbType,
         x: pt.x,
         y: pt.y,
         width: Number(layer.wbW) || 100,
@@ -594,24 +696,103 @@ const finalizeRestore = async (board, scene, result, opts, canRebuild) => {
           name: layer.objectName || layer.title,
           _rebuiltFrom: 'coordinate'
         }
-      });
+      };
+
+      let rebuilt = null;
+      if (wbType === 'text') {
+        // ✅ text 专属完整字段集（9 个必需字段一个不少）
+        //   文字内容用 annotation.title 兜底（近似重建本就丢原文，
+        //   但至少保证 Excalidraw 渲染不崩，且用户能看回一个名字）。
+        const label = String(layer.objectName || layer.title || '');
+        rebuilt = {
+          ...rebuildBase,
+          text: label,
+          originalText: label,
+          fontSize: 20,
+          fontFamily: 1,          // 1 = Excalidraw 默认手绘体（Excalifont）
+          textAlign: 'left',
+          verticalAlign: 'top',
+          containerId: null,
+          lineHeight: 1.25,
+          baseline: 0
+        };
+      } else if (wbType === 'rectangle' || wbType === 'ellipse' || wbType === 'diamond') {
+        // 基础封闭图形：字段集与模板同源，直接可用
+        rebuilt = { ...rebuildBase };
+      } else if (wbType === 'arrow' || wbType === 'line') {
+        // 线性元素：必须补 points（无兜底，缺则渲染异常）
+        //   无原始路径信息 → 用元素自身宽高构造一条对角直线，几何近似
+        // 🔖 `_rebuiltFrom: 'coordinate-line'` 与基础图形的 'coordinate' 区分开：
+        //   线性元素的重建**丢失了原始路径**（只有一条近似对角线），
+        //   后续若要排查「箭头形状不对」，先看这个标记即可断定是重建产物。
+        rebuilt = {
+          ...rebuildBase,
+          points: [
+            [0, 0],
+            [Number(layer.wbW) || 100, Number(layer.wbH) || 0]
+          ],
+          lastCommittedPoint: null,
+          startBinding: null,
+          endBinding: null,
+          startArrowhead: null,
+          endArrowhead: wbType === 'arrow' ? 'arrow' : null,
+          customData: {
+            ...(layer.customData || {}),
+            name: layer.objectName || layer.title,
+            _rebuiltFrom: 'coordinate-line'
+          }
+        };
+      } else {
+        // 🚨【B 的简化版】frame / embeddable / image / freedraw 等复杂类型：
+        //   本次**不逐个实现模板** → **拒绝重建**，落入 missing 分支，不 push 半成品。
+        //   理由：半成品（类型与字段不符）比「缺失」危害大得多 —— 它能毒死整个画布。
+        //   根治走「B 方案：wbElementRaw 强制留档」（已记入 MEMO 待办）。
+        console.warn('[elementSync] 降级重建跳过（无对应模板，宁缺勿滥）:',
+          elementId, 'type=' + wbType);
+        rest.push(elementId);
+        continue;
+      }
+
+      scene.push(rebuilt);
       result.rebuilt++;
     }
     result.missing = rest;
   }
 
-  // 写回白板场景（只在真的改了东西时才写库，避免无意义 IO）
-  if (result.revived > 0 || result.rebuilt > 0) {
-    await saveBoard({
-      boardId: board.boardId,
-      fileId: board.fileId,
-      name: board.name,
-      bounds: board.bounds,
-      canvas: board.canvas,
-      appState: board.appState,
-      scene
-    });
-  }
+  // 🛡️【缺陷 1 · 第 1 步 E1（2026-10-07）】此处**不再写库** —— 裸写已删除。
+  //
+  // 【为什么删掉它】
+  //   原代码：if (revived>0 || rebuilt>0) await saveBoard({...scene})
+  //   ⚠️ 它**不传 baseUpdatedAt** → 绕过 boardStore 的乐观并发控制（CAS）
+  //      （boardStore.js:88 `opts.baseUpdatedAt !== undefined && existing`，
+  //        undefined !== undefined = false ⇒ 完全不校验）
+  //
+  //   由此产生一条**不可逆 + 静默**的数据丢失路径：
+  //     ① 用户删 A → board.scene 里 A 是 isDeleted=true（captureScene 不过滤）
+  //     ② 用户恢复 A → 本函数在内存里把 A 擦成 isDeleted=false
+  //     ③ 若走的是 result.missing 分支（元素不在 scene 且无 raw）→ **本函数不写库**
+  //        → 库没变 → 调用方的 lastKnownUpdatedAt 仍是旧值
+  //     ④ 用户立刻切走 → onBeforeUnmount 的乐观写**基线与库一致 → 校验通过 → 写入成功**
+  //        → 旧快照带着 isDeleted=true 覆盖回去 → **元素永久消失**
+  //        → 而 UI 显示「恢复成功」，用户下次打开才发现 ⇒ 静默
+  //
+  // 【现在由谁写库】
+  //   `WhiteboardTool.refreshDataFromDB` —— 它是本结果的**唯一消费入口**，
+  //   且它在 `setScene` **之前**已调用 `persistBoardAuthoritative(scene)`：
+  //     「先权威写库 → 再刷画布」两个动作**在一起**完成
+  //   ⇒ 不存在「库变了但调用方基线没变」的时间窗 ⇒ 上述 ③④ 整条链被切断。
+  //
+  // 【为什么不在本函数里改成「带 base 的乐观写」】
+  //   本函数不知道调用方的版本基线（board.updatedAt 已在此前的写库中变化），
+  //   传一个猜的 base 只会把「静默回灌」换成「静默写入失败」（恢复的元素显示不出来）
+  //   ⇒ 交给持有权威语义的调用方写，才是唯一语义正确的落点。
+  //
+  // ⚠️【约定】本函数只负责「计算 scene」，**不落库**。
+  //   调用方必须自行持久化 `result.scene`：
+  //     · `RecycleBinModal.persistRestoredScene`（先 getBoard → 权威写，**必须先于 notify 执行**）
+  //     · `restoreRecycledElements` 的调用方同理
+  //   ⚠️ 绝不能在此处加回 saveBoard —— 不传 baseUpdatedAt 即可绕过 CAS，
+  //      这正是上面那条静默丢失链的成因。
 
   result.scene = scene;
   delete result._canRebuild;
@@ -624,6 +805,8 @@ const finalizeRestore = async (board, scene, result, opts, canRebuild) => {
  * @param {Array<object>} recycleRecords - 回收站记录数组（含 layer.wbElementId / wbElementRaw）
  * @param {object} [opts] - { boardId, bounds, canvas }
  * @returns {Promise<{revived:number, rebuilt:number, missing:string[], scene:Array}>}
+ *   ⚠️【E1 契约】返回的 `scene` **尚未落库**，调用方必须自己持久化
+ *      （先 getBoard 取全量 → 权威写），否则恢复结果会丢失。
  */
 export const restoreRecycledElements = async (recycleRecords, opts = {}) => {
   const list = Array.isArray(recycleRecords) ? recycleRecords : [];

@@ -12,14 +12,18 @@
 ## 零、新对话启动清单（每个新对话第一步，不用人提醒）
 
 1. **先读** `.agents/PROJECT_MEMO.md`（唯一记忆文件，必读，无例外）。
-2. **白板任务**再读（存在才读，不存在则跳过并在报告里说明）：
+2. **再读协作信箱** `.agents/mailbox/to-cline.md`
+   （若存在且非空 → 那是 DeepSeek 写给你的指令，优先处理；读完标注「（已读）」或清空，避免重复处理）。
+3. **白板任务**再读（存在才读，不存在则跳过并在报告里说明）：
    - `.agents/references/whiteboard-integration.md`（路线 A 交接：目标/约束/数据映射）
    - `.agents/references/whiteboard-autonomous-plan.md`（自主执行指南：任务清单/红线）
    - `.agents/references/whiteboard-full-capability-plan.md`（**当前不存在**，属预期；
      若用户后续创建，白板任务必须读）
-3. **地图数据任务**按需读下表对应 skill（见「一、触发式加载」）。
-4. **动手前先复述**：「上次进度 + 本轮要做什么」，等用户确认后再改代码。
-5. 复述内容以 MEMO 的「六、待办」为准，不要凭记忆。
+4. **地图数据任务**按需读下表对应 skill（见「一、触发式加载」）。
+5. **动手前先复述**：「上次进度 + 本轮要做什么」，等用户确认后再改代码。
+6. 复述内容以 MEMO 的「六、待办」为准，不要凭记忆。
+7. **每完成一个任务，报告写进** `.agents/mailbox/to-deepseek.md`（覆盖式，只留本轮），
+   对话里简短说一句「报告已写入 mailbox」即可，不必在对话里重复全文。
 
 ---
 
@@ -27,6 +31,7 @@
 
 | 命中条件 | 必须先读取 |
 |---|---|
+| **每个新对话（无例外）** | `.agents/mailbox/to-cline.md`（存在且非空 = DeepSeek 的指令，优先处理；处理完标注「（已读）」或清空） |
 | 任何开发 / 数据 / 代码 / 调试任务 | `.agents/PROJECT_MEMO.md`（见「零」启动清单） |
 | **白板 / Excalidraw / wb- 相关任何改动** | `.agents/references/whiteboard-integration.md`<br>+ `.agents/references/whiteboard-autonomous-plan.md`<br>+ `.agents/references/whiteboard-full-capability-plan.md`（存在才读） |
 | 修改、新增、删除代码文件 | `.agents/skills/代码修改返还完整代码/SKILL.md` |

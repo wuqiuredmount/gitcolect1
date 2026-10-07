@@ -4,7 +4,165 @@
 > 本文件是**跨会话的唯一权威记忆**。新会话开始时，AI 必须先读它。
 > **每轮对话结束前，AI 必须更新本文件的「数据现状」与「待办」两节。**
 
-最后更新：2026-10-06（**用户已确认主 bug 修复生效**：状态栏「元素 1·已登记 1」、信息数据库出现 WB.00012 记录。本轮完成三项收尾：① 字体路径 `/gis/fonts/` 404 已修（按协议分流取 origin / 目录前缀，实测 `ASSET_PATH=http://localhost:5173`、`/gis/fonts/` 请求 **0** 次）；② **问题 2 根因锁定并修复** —— 0.18.1 的 prop 名是 `excalidrawAPI` 而非 `onExcalidrawAPI`，实测 `"should be a function!"` **0** 次、`canvasReady` 正常打开；③ 诊断日志分级清理（保留 3 条关键，其余降 debug/删）。断言 89/89，build 通过）
+最后更新：2026-10-07（**第 19 轮：缺陷 1 · 第 1 步 E1 已实施（消灭裸写）**。
+**① `elementSync.js` `finalizeRestore`（原 `:762-773`）删掉裸写** ——
+原 `if (revived>0||rebuilt>0) await saveBoard({...scene})` **不传 baseUpdatedAt** ⇒ 绕过 CAS
+（`boardStore.js:88`）⇒ 构成**不可逆 + 静默**的数据丢失链（`missing` 分支不写库 → 库没变 →
+白板 `onBeforeUnmount` 乐观写**基线匹配 → 写入成功** → 旧快照带 `isDeleted=true` 回灌 →
+元素永久消失而 UI 显示「恢复成功」）。现在本函数**只算 scene、不落库**。
+**② 关键发现（DeepSeek §二-2 未预见的第二处）**：`RecycleBinModal.restoreWhiteboardScene` 是
+restore 的**另一条调用路径** —— `notifyWhiteboardRefresh()` 只调 `window.__wbRefreshHook()`
+**不传参**，`refreshDataFromDB` 是「**重新从库读**」型入口 ⇒ **拿不到** restore 算出的 scene。
+故 **必须由 `RecycleBinModal` 自己权威写**（新增 `persistRestoredScene`：
+先 `getBoard()` 取全量 → 不传 base 的权威写；⚠️ 必须先 getBoard，因 `saveBoard` 的
+`appState: board.appState||{}` **无 existing 兜底**，只传 scene 会清空 appState），
+且**调序为「先写库 → 再 notify」**（反了会让白板用旧 scene 覆盖库 → 恢复白费）。
+**正向收益**：恢复不再依赖「白板正开着」/ 消灭「库变基线不变」窗口 / appState 不清空。
+✅ 验证：逻辑测试 **11/11**（旧行为丢链复现 3 + E1 修复 3 + 对照组 1 + appState 3 + 白板未开 1）
++ `npm run build` ✅ 1.86s（注释补充后复验 2.32s）；临时脚本已清理；全仓已无「非权威 + 不传 base」的裸写。
+✅ **E1 契约已写入代码**（防后人加回）：`finalizeRestore` 末尾注释 + `restoreRecycledElements`
+的 JSDoc + `RecycleBinModal.restoreWhiteboardScene` 内的完整丢失链推导与调序理由。
+⏳ 待裁决 4 项：① 第二处改动是否认可 ② 未使用 `saveBoard` import 保留/删 ③ `_persisted` 命名
+④ 等用户实测后进第 2 步 D）
+✅ **第 19 轮裁决已全部通过**（19-2 回执）：① 第二处调用路径认可 ② `RecycleBinModal` 自主权威写认可
+③ 调序认可 ④ `saveBoard` import **保留** ⑤ `_persisted` 命名认可。**E1 已定稿，不再改动。**
+📋 **DeepSeek 要求把用户实测清单写进报告**（已写入 `to-deepseek.md` §十，8 步：
+画2→删1→切走切回(1/1/1)→恢复→**立刻切走切回**→(2/2/0)→**再刷新页面仍为 2**）。
+⇒ **下一步：等用户按清单实测并回报 → 通过后进第 2 步 D。**
+
+## 第 18 轮存档（2026-10-07）：缺陷 1 方案设计（未改代码）—— 交付 G 方案
+
+DeepSeek 已裁决通过 G 方案全部 5 项，第 19 轮只批**第 1 步 E1**（已在上面实施）。
+本轮**只做设计、零源码改动**（build 1.59s 仅验证）。核出三条**推翻我自己旧判断**的事实：
+① **`wbElementRaw` 每次删除都必然有值**（`elementSync.js:265-266` 的 `rawById` 由当前 scene
+全量建立，`:281` 入库；因删除只打标记不物理移除 → 必然命中）⇒ 我上轮「raw 可能缺失 → 情况 1
+不可替代」**是错的**；「老记录无 raw」只指补丁前的历史记录。
+② **畸形 text 不是「情况 1 物理移除」造成的** —— `finalizeRestore` 降级重建**就在
+`restoreElementsToBoard` 内部**，是情况 1 的**兄弟分支**，二者互不干扰 ⇒ 「情况 2 替代情况 1」
+**零新增降级风险**（修正 MEMO 坑#14 的成因叙述）。
+③ **CAS 拦不住 `finalizeRestore` 的裸写**（`:764` 不传 baseUpdatedAt）—— 实测时间窗：乐观写
+（CAS）**全偏移都拒**（含 0ms）⇒ 上轮「0ms 是漏洞」**悲观误判已撤回**；但裸写**全偏移都回灌**
+⇒ **裸写必须消灭，否则 T 方案正确性不闭合**。
+⚠️ 唯一致命危害 = **不可逆 + 静默**的数据丢失（`result.missing` 分支不写库 + 基线未变 →
+乐观写匹配成功 → 旧快照带 isDeleted 覆盖 → 元素永久消失、UI 却显示「恢复成功」）。
+📋 推荐 **G 方案**：**E1**（`finalizeRestore` 不再写库，交 `refreshDataFromDB` 用已有的
+`persistBoardAuthoritative` 统一权威写 ⇒ 裸写从根消失）+ **D**（`runSync` 删除分支把**已成功
+入档**的元素从 scene 剔除；⚠️ 只在入档成功后剔、不只过滤 isDeleted）+ **军规哨兵**（`missing` 必须可见）。
+❌ 不做：不动 `captureScene` / 不做 C（物理移除）/ 不做 B（载入即永久剔除，会**永久杀死**历史恢复能力）。
+✅ 情况 1 代码**保留**为兼容层（第 2 步后自然失效）。⏳ 等 DeepSeek 裁决 5 项）
+
+## 第 11 轮存档（2026-10-07）
+🚀 **第一批：回收站性能优化**（按 DeepSeek 裁决 1，**只改 `RecycleBinModal.vue`**）
+  · **方案 2**：`loadItems()` 由 7 库串行 → `Promise.all` 并发，**逐库 catch 兜底**（一库坏不炸全表）
+  · **方案 3**：新增 `removeItemLocally(item)`，恢复/彻底删除后 `splice` 局部移除，
+    清空后 `items.value = []` —— **不再全量重载**（旧版恢复 5 条 = 35 次库遍历，是卡顿主因）
+  · **方案 4**：`getRegisteredElementsWithBoard()` 的 `getBounds`/`getCanvas` 合并并发读
+  · **开窗时机**（关键约束）：方案 3 移除了「操作后重载」这一隐式新鲜度保证，
+    `watch(visible)` 里的无条件 `loadItems()` 成为**唯一**新鲜度来源 → 已写注释标「关键，勿删」
+  · **顺带修 2 处旧遗漏**：`handlePurge` / `handleClearAll` 原本**都没有** `emit('changed')`
+    → 「彻底删除/清空」后 GisApp 图层缓存不刷新。已补齐（方案 3 后 emit 成为唯一通知渠道）
+  · ⚠️ **踩坑（已修）**：实现裁决 3 时我顺手在开窗处加了 `emit('changed')`，
+    查接线发现 `GisApp.vue:299` 把它接到 `loadAllLayersFromDB()` ——
+    那是「7 库 × N 图层 + 每图层一次 `getDocument`」的 **N+1 全量重查**，
+    开窗触发会**直接抵消本次优化**。已删除该行并加注释锁死防复发。
+  · ⚠️ `executeCmd`（AI 批量指令）**保留** `await loadItems()`：批量可能改多行，局部更新覆盖不了
+  · 验证：build 1.42s ✅ / 10 项特征串落盘全过 / UTF-8 干净 / 残留 `await loadItems()` = 1（预期）
+
+## 第 10 轮存档（2026-10-07）—— 只出方案，未动代码
+📋 **两件方案评估**（DeepSeek 已全部采纳，见第 11 轮执行）：
+  · **回收站慢**：纠正 3 处根因误判 —— ①`handleRecover` 事务更少（地图元素直接 return）；
+    ②真正放大器是「每次恢复后全量 `loadItems()`」（恢复 5 条 = 35 次库遍历）；
+    ③`ensureToolMigrated` 有内存缓存，首访后零事务。四方案排序：**方案3(局部更新) > 方案2(并发)
+    > 方案4(合并读) > 方案1(放弃)**
+  · **P1**：纠正关键前提错误 —— **`recordToElement` 不存在**（全仓 0 命中）；
+    T1 的 `restoreElementsToBoard` 只有「塞回已有 wbElementRaw」/「按坐标降级重建」两条路径，
+    **都不是「从记录生成元素」** → P1 是从零新建生成器，不是复用。
+    另确认 `AiImportPanel`/`MarkerDocPanel` **已是工具无关的**（toolId/fileId 走 props）
+
+
+## 第 9 轮收尾（2026-10-07）
+🧹 **收尾 1：临时调试按钮全清**（`WhiteboardTool.vue`）
+  · 删除 4 处：模板 button 块 + `handleTempDebugClear`/`debugClearing` + `.wb-btn-debug` CSS + `clearAllLayers` 导入
+  · `grep '临时调试'` / `wb-btn-debug` / `debugClearing` / `handleTempDebugClear` / `clearAllLayers` **全部 0 命中** ✅
+  · dist 产物确认「临时调试」已消失，「🛡️ 已隔离」（C 方案）仍在 ✅
+  · ⚠️ 清理手法提醒：CSS 区块删除时我用 PowerShell 按行删，**多删了 1 行**导致孤立 `};`（build 报错），
+    已修。**教训：按行号批量删后必须立刻 build，不能只看 grep 结果。**
+🔖 **收尾 2：arrow/line 区分标记**（`elementSync.js`）
+  · 线性元素重建的 `customData._rebuiltFrom` 由 `'coordinate'` → **`'coordinate-line'`**
+    （线性元素重建**丢失原始路径**，只有一条近似对角线；该标记便于排查「箭头形状不对」）
+  · 基础图形仍为 `'coordinate'`，两种取值均已打包 ✅
+📮 **收尾 3：mailbox 改覆盖式**
+  · `to-deepseek.md` 只保留本轮报告（此前累积 29909 字节 / 3+ 轮历史，违背 token 节约要求）
+  · 历史报告交给 git 保存，不再累积
+✅ **A+C 实测结论（用户验收）**：画布正常显示、删除-恢复闭环通、控制台正确隔离 2 个毒元素 → 达标。
+
+## 第 8 轮存档（2026-10-07）
+🔧 **第 8 轮（按 DeepSeek 裁决，A + C 立即、B 排期）**：
+  · **A 治坏数据源** `elementSync.js:662-748`：降级重建改为「先 `rebuildBase`，再按 `wbType` 分派」——
+    `text` 补全 9 个必需字段；`rect/ellipse/diamond` 同源直接用；`arrow/line` 补 `points`；
+    `frame/image/embeddable/freedraw` **拒绝重建**（落入 missing，半成品比缺失危害大）。
+  · **C 长期防御** `elementSync.js:563-647`：新增 `validateElement` / `filterBrokenElements`，
+    必需字段表 `text→[text,fontFamily,fontSize]`、`image→[fileId]`、`frame→[children]`，
+    另校验共有字段 `id/type`（非空串）与 `x/y`（有限数值）。
+    **两层接线**：① `WhiteboardTool.sanitizeSceneFromDB()`（读库 + 恢复回写）
+    ② `ExcalidrawBoard.toSafeElements()`（漏斗收口，覆盖 `initialData`/`onApiReady`/`setScene`/`watch` 4 出口）。
+    行为：残缺元素**内存剔除不送画布** + `console.warn` 列出 id/type/缺字段，**不写库、不删 annotations**。
+  · **离线验证**：C 8 用例全过（识别畸形 text + 空文本不误杀）；
+    A 产物 × C 校验器 10 类型交叉验证全通过（证明 A/C 自洽，C 不会剔除 A 的产物）。
+  · **B（根治）已排期**：`wbElementRaw` 强制留档。详见「五-14」+ `to-deepseek.md` 第 8 轮。
+  · ⚠️ 待裁决：A 中 `arrow`/`line` 我**额外补了 `points`**（原文只说「保持现有模板」）。
+
+## 第 7 轮存档（2026-10-07）
+🔍 **第 7 轮（只诊断 + 加临时按钮）**：
+  · **根因确认**：`elementSync.js:577-608` 降级近似重建**硬编码 28 个矩形字段**，
+    第 579 行只换 `type` 不换字段集 → `wbType==='text'` 时产出无
+    `text`/`fontFamily`/`fontSize`/… （9/9 全缺）的**畸形元素** → 写入 `board.scene`
+    → 下次打开渲染时 `renderText` 读 undefined → **TypeError** → React error boundary
+    → **整个画布挂起**（「正在加载绘图...」不恢复）。详见 MEMO「五-14」。
+  · `wbElementRaw` 补丁路径**字段完整、不受影响** → 故**偶尔**才触发（换白板/清过画布/早期删除无 raw）。
+  · 临时按钮 `🧪 [临时调试] 清空白板` 已加（三步：清 scene → `clearAllLayers` → reload），
+    **用完必删清单见「六、待办」**（4 处，`grep -n '临时调试'` 定位）。
+  · 报告全文见 `to-deepseek.md` 第 7 轮。
+
+## 第 6 轮存档（2026-10-07，仍有效）
+🔧 **第 6 轮（按 DeepSeek 裁决，只改一行）**：
+  · `WhiteboardTool.vue:361` `allowDelete: alive.length > 0` → **`allowDelete: firstNonEmptyChangeSeen`**
+  · 根因：旧判据把「首帧空回抛（应禁）」与「用户删光（应允）」混为一谈 ——
+    删光时 `alive.length === 0` → `allowDelete:false` → `elementSync` 删除整块被静默跳过
+    → 回收站**什么都没有**（现象正是「删除失效」）。
+  · 闸门③（`:320-334`）**一字未动**：它才是「首帧空回抛」的唯一防线，且在 `allowDelete` 之前 return。
+  · 离线复算 6 场景全通过（含关键 S4「画2删光」：旧 false → 新 true）；产物验证 `R` 双用已对齐。
+  · 详见 `to-deepseek.md` 第 6 轮报告 + MEMO「五-13」。
+
+## 第 5 轮存档（2026-10-06，仍有效）
+🔧 **第 5 轮（按 DeepSeek 裁决）**：
+  ① `elementSync.js` 更新分支**新增 group 同步**（本次关键修复，详见「五-12」）——
+     `if (moved||renamed||reshaped)` → `|| regrouped`，`next` 里追加 `group: regrouped ? currentGroup : prev.group`；
+  ② 删掉 `WhiteboardTool.vue` 里上轮加的 `wbGroupOverride` / `bumpWbGroupOverride` / `getEffectiveGroup` 三件套
+     （库值已正确 → 覆盖层就是新隐患），`wbPanelLayers` 恢复简单形式（不再读 `getEffectiveGroup`），
+     `wbPanelGroups` 改回读 `registeredList` 的 `l.group`，`handleWbUpdateGroup` 末尾改为
+     `refreshRegisteredList()`（**只读库、不写库**，不构成第二写入口）；同时移除已无用的 `shallowRef` import。
+  ③ `buildFingerprint` 不含 group **已逐行核实**（`fingerprint.js:101` payload = `[name,lat,lng,toolId,type]`）
+     → 「改组不触发注销/重登」成立，DeepSeek 的指纹安全性结论正确。
+本轮新增：`LayerListPanel` 加 `hideWindowHint` 增量 prop；新建 `WhiteboardPanels.vue` 薄包装
+（图形列表 Teleport 顶栏 + 信息栏画布左下角浮层）；`WhiteboardTool.vue` 完成模板接线 +
+`wbPanelLayers`/`wbPanelGroups` computed + `syncSelectedToInfoPanel` / `whiteboardLocate` /
+`handleWbUpdateGroup` / `handleWbDeleteElement` 四个 handler。
+🔧 **本轮修正（第 4 轮）**：上轮删除实现是**错的**，已按 DeepSeek 裁决回滚 ——
+`handleWbDeleteElement` 改为**只打 `isDeleted` 标记**（不物理移除、不手动写回收站）。
+**失效链**：物理移除 → `onChange` → `runSync` 删除分支 `moveToRecycleBin`，
+其 `wbElementRaw` 取自 `rawById`（`elementSync.js:265-266`，**由当前 scene 建立索引**）
+→ 元素已被移除 → 传 `null` → 恢复时情况 1（`:521` 需元素在 scene）与情况 2
+（`:534` 需 rawMap 有值）**双双不成立** → 落 `missing` → 画布上什么都不出现。
+🆕 **顺藤摸出更严重的问题**：`elementSync` **根本不同步 `group`** ——
+更新分支（`:330-358`）的 `next = {...prev}` **不包含 group**，
+`getElementGroup` 只在**新增**（`:370`）与 `registerElement`（`:466`）时读一次。
+⇒ 我上轮报告的「分组双写」**不成立**，且会出现「改组后列表闪回旧分组」。
+已在 `WhiteboardTool` 侧用 `wbGroupOverride`（`shallowRef<Map>`）+ `getEffectiveGroup`
+做**画布侧有效值**（零改动 elementSync），但**库值仍滞后**（重启后回旧值），待 DeepSeek 裁决。
+🚨 **新增禁令**：面板侧**禁止**手动调用 `runSync` / `moveToRecycleBin`
+（`handleWbUpdateGroup` 上轮也犯了这个「多此一举」的错，已移除）。
+上一轮已确认主 bug 修复生效：状态栏「元素 1·已登记 1」、信息数据库出现 WB.00012 记录）
 
 ---
 
@@ -297,255 +455,389 @@ Excalidraw 侧走 `else` 分支只打一句 `console.error("excalidrawAPI should
    本轮曾生成一批坐标并贴「多源交叉核验」标签，实际未采集。此类行为违反数据真实性底线，
    查不到就入待处理库，绝不允许编造。
 
-6. **维基百科与 Wikimedia 被网络封锁**
-   本机百度/高德可达，但 zh.wikipedia.org 与 upload.wikimedia.org 不可达，浏览器也救不了。
-   → 4A 及后续数据必须改用国内源（文旅部、各省文旅厅、百度百科），图片也要换国内图床。
-   → 5A 批次里用的 Wikimedia 外链在 4A 不要再沿用。
 
-7. **Edge 采集通道需要独立调试实例**
-   日常 Edge 没开远程调试端口，edge-devtools 连不上。
-   恢复方法见 `.agents/references/browser-channel.md`。
+12. **`elementSync` 更新分支从不同步 `group`（架构级 bug，2026-10-06 修）**
+    现象：白板里给元素改分组 → **会话内看着生效，重启/刷新后回到旧分组**。
+    根因：`elementSync.js` 的 syncScene **只**在
+      - 新增分支（`getElementGroup(element)`，约 :370）
+      - `registerElement`（约 :466）
+    这两处读 `customData.group`；**更新分支（约 :330-358）的 `next = {...prev, ...}` 里根本没有 group 字段**
+    → 元素一旦登记过，此后改 `customData.group` 永远不会写回 `annotations.group`，
+      库里恒为「首次登记时」的旧值。
+    为什么必须修：用户目标是「白板元素和地图元素享受一样的待遇」。地图侧改分组走 forceAutoSave
+    立即落库（见「三-5 分组编辑增强」），白板侧不落库 = 待遇不一致；且这类 bug **会跨会话复现**，
+    不是一次性失误。
+    修法（DeepSeek 裁决选 3：改 elementSync，而非「保持现状」/「面板侧多写一份库」）：
+    条件 `if (moved || renamed || reshaped)` → 追加 `|| regrouped`；
+    并先算 `currentGroup = getElementGroup(element)`、`regrouped = currentGroup !== prev.group`，
+    在 next 里加 `group: regrouped ? currentGroup : prev.group`。
+    指纹安全性（已逐行核实，不是推理）：`buildFingerprint` 的 payload 只有
+    `[name, lat, lng, toolId, type]`（`src/groups/geo/utils/fingerprint.js:101`），**不含 group**
+    → `regrouped` **必须不**进入下面 `if (moved || renamed)` 的注销/重登判定，否则会平白注销重登指纹
+      （本项目指纹重建是危险动作，见坑 2）。
+    配套教训：数据源修好后必须撤掉消费侧「覆盖层」。修复前曾在 `WhiteboardTool.vue` 加过
+    `wbGroupOverride`(shallowRef Map) + `bumpWbGroupOverride` + `getEffectiveGroup`，
+    用「画布值优先、库值兜底」绕开症状。库值一旦正确，这三件套立刻变成新隐患（两份真相、永不同步），
+    已按裁决整体删除，`wbPanelLayers` 恢复直接读 `item.group`。
+    可迁移的通用规律：「写入侧漏字段」这种 bug **极难被两端同时发现** ——
+    读的一侧（面板）永远只看到旧值，很容易误判成「Vue 响应式/缓存问题」，进而去加缓存层把 bug 盖住。
+    排查正解：**先列出该字段的所有写入点，再确认「我这条路径」是否在其中**。
 
-8. **大段 edit_file 匹配失败会静默缺函数**
-   一次 edit 若 oldText 匹配到多处会整体失败，但 build 仍能通过（模板引用未定义函数不报编译错）。
-   → 改完大段代码后必须用 search_code 核验关键函数是否真的落盘，不能只看 build 成功。
+### 13. `allowDelete` 判据混用两种语义 → 「删光元素」删除被静默吞掉（2026-10-07 修复）
 
-9. **图层必须始终在 editableLayers 容器内增删**
-   所有图形加载时都通过 `editableLayers.addLayer(layer)` 挂到 FeatureGroup。
-   任何显示/隐藏操作（如分组过滤）都必须用 `editableLayers.addLayer/removeLayer`，
-   **绝不能直接 `map.addLayer/removeLayer`**。
-   - 后果：图层脱离容器 → 与底图投影关系错乱 → 图形跑到太平洋/南海等错误位置。
-   - 判断是否在容器内用 `editableLayers.hasLayer(ref)`，不要用 `map.hasLayer(ref)`。
-   - 已修：`handleFilterGroup`（BaseMapTool.vue:733）。
+    现象：白板里画元素 → 从图形列表删除 → **回收站里什么都没有**（形如「删除完全失效」）。
+    根因：`WhiteboardTool.vue` 调用 `syncScene` 时传 `allowDelete: alive.length > 0`。
+      这个判据把**两种完全相反**的情况混为一谈：
+        · 首帧空回抛（**必须禁止删除**）：Excalidraw 还没消化 initialData，从未见过非空
+        · 用户删光（**必须允许删除**）：之前必然见过非空，但此刻 `alive.length` 恰好也是 0
+      ⇒ 后者被前者误伤：`allowDelete:false` → `elementSync` 的删除整块（`:253-296`）
+        被静默跳过 → 不写回收站、不删富文本、不注销指纹 → 用户看到「删除无效」。
+    修法（DeepSeek 裁决，一行）：判据改为 `firstNonEmptyChangeSeen` ——
+      它是「Excalidraw 已消化完 initialData」的唯一可靠证明，与闸门③ 的置位语义天然一致：
+        · 从未见过非空 → false → 不误删首帧 ✅
+        · 用户删光     → true  → 正确归档 ✅
+    ⚠️ 闸门③（`:320-334`）**必须保留原样**：它拦的是「`alive===0 && 基线>0 && 未见非空」，
+      在 `allowDelete` 计算**之前**就 `return` 了 —— 是「调用都不到达」，比「传 false 进去」更强。
+    可迁移规律：**用「当前状态量」（alive.length）去表达「历史是否发生过某事」（是否已初始化完成），
+      必然在状态量回到初始值时出错。** 需要的是**单调的、只升不降的闩锁（latch）**，
+      而不是一个会回落的瞬时计数。同类的还有「用 `elements.length>0` 判断是否加载完」
+      「用 `list.size` 判断是否安装过」——凡「一旦为真就该永久为真」的语义，都要用 latch。
 
-10. **Excalidraw 0.18.1 没有 scrollConstraints**（2026-10-06 实测）
-    网上大量资料提 `initialData.appState.scrollConstraints`，但该 API 在 0.18.1 中
-    **类型声明与构建产物均为 0 处**。可用入口只有 `Props.viewModeEnabled`（会连画图一起禁掉）、
-    `Props.onScrollChange` / `api.onScrollChange`（均只读）。
-    且 Excalidraw 把滚动钳制在「内容包围盒」内，`scrollX/scrollY` 无法被程序固定为常数。
-    → 本版本改用**读时归一化**：直接用 `element.x/y`（世界坐标）换算 lat/lng。
-      平移只改 `appState.scrollX/scrollY`，不改 `element.x/y`，故坐标与指纹天然稳定。
-    → 结论已写死进 `elementSync.js` 注释（toWorldPoint / worldToScreen）。
+### 14. 降级「近似重建」只覆盖创建者字段子集 → 畸形元素毒死整个画布（2026-10-07 定位）
 
-11. **用 insert_line 在 .vue 文件插入代码极易错位**（2026-10-06）
-    行号会随着前一次插入漂移，且若不巧落在 `computed(...)` / `</template>` 中间，
-    会截断语句导致 `Unexpected token` 或 `Element is missing end tag`（本次连踩 3 次）。
-    → 大文件分块写：优先用 `old_text/new_text` 锚定**唯一文本**做替换，
-      或先 `Get-Content | Select-Object` 核实行号与上下文再插入；
-      写完后务必 `Select-String '</?template|</?script|</?style'` 校验 SFC 结构完整。
+    现象：白板打开后**永久卡在「正在加载绘图...」**，元素有轮廓无图像、
+      不能定位（`scrollToContent` 失效）、新元素不被记录。
+      控制台一条 `TypeError`（`chunk-4FTI6OG3.js:1662`，实为 Excalidraw 内部子组件）。
+    根因：`elementSync.js:577-608` 的**降级近似重建**路径
+      （`restoreElementsToBoard` 的「情况 2」兜底：元素既不在 scene、`rawMap` 里也没有时）。
+      它硬编码 **28 个字段，全部来自矩形模板**：
+        id/type/x/y/width/height/angle/strokeColor/backgroundColor/fillStyle/
+        strokeWidth/strokeStyle/roughness/opacity/groupIds/frameId/roundness/
+        seed/version/versionNonce/isDeleted/boundElements/updated/link/locked/
+        customData/name/_rebuiltFrom
+      第 579 行 `type: String(layer.wbType || 'rectangle')` 只换了 `type`，
+      **字段集仍是矩形的**。当 `wbType === 'text'` → 产出 `type:'text'` 却无
+      `text`/`fontSize`/`fontFamily`/`textAlign`/`verticalAlign`/`containerId`/
+      `originalText`/`lineHeight`/`baseline`（**9/9 全缺**）的**畸形元素**。
+    因果链：畸形元素写入 `board.scene` → 下次打开进 `initialData.elements`
+      → Excalidraw 渲染 → `renderText` 读 `element.fontFamily`/`element.text` = undefined
+      → TypeError → **React error boundary 捕获 → 整个 Excalidraw 组件树不再更新**
+      → 画布挂起，且「选中+Delete」「图形列表删除」两条 UI 路径**全失效**，用户无法自救。
+    为什么只有 text 炸：矩形/椭圆/箭头缺字段时 Excalidraw 有宽松默认兜底；
+      `text` 的 `renderText` **直接读** `fontFamily`/`text`，无兜底 → 必炸。
+    为什么「偶尔」才撞上：`wbElementRaw` 补丁（`:545-552`）用删除时深拷贝原样塞回，
+      **字段完整**，不走降级路径。只有「换过白板 / 手动清过画布 / 早期删除未留 raw」
+      这类极端情况才落入 `:577`。⇒ **不是每次恢复都触发**。
+    ⚠️ 附带排除：`getWbType`（`:152`）是 `` `wb-${element.type}` ``，
+      而 `buildAnnotation`（`:193`）写的是 `wbType: element.type`（**裸类型**），
+      故 `layer.wbType` 本就是 `'text'`，第 579 行取用**无误** —— 问题**只在字段集**。
+    可迁移规律：**「按坐标近似重建」这类降级路径，必然只覆盖「创建者的字段子集」。**
+      一旦被重建的元素类型 ≠ 降级模板的类型，就产出**类型与字段不符的畸形对象**。
+      防御原则：① 降级重建**必须按 `type` 分派模板**；
+      ② 做不到就**宁可拒绝重建**（报 missing），不产出半成品 ——
+      因为半成品可能比「缺失」危害大得多（本例：一个坏元素毒死整块画布，用户连自救 UI 都没有）。
+      更一般的：**「宁缺勿滥」在持久化数据上成立，在渲染数据上更成立。**
 
-12. **Node ESM 跑源码验证脚本需补 .js 后缀**（2026-10-06）
-    项目源码按 Vite 习惯省略 import 后缀，`node xxx.mjs` 直跑会 ERR_MODULE_NOT_FOUND。
-    → 临时写一个 `register('./.js-resolver.mjs')` 解析钩子补后缀，验证完即删，不留在仓库。
+    ✅ **第 8 轮修复（A + C）**：
+      · **A（治已知坏数据源）** `elementSync.js:662-748` —— 降级重建改为「先建 `rebuildBase`，
+        再按 `wbType` 分派模板」：
+          - `text` → 补全 9 个必需字段（`text`/`originalText`/`fontSize:20`/`fontFamily:1`/
+            `textAlign:'left'`/`verticalAlign:'top'`/`containerId:null`/`lineHeight:1.25`/`baseline:0`）
+          - `rectangle`/`ellipse`/`diamond` → 字段集同源，直接可用
+          - `arrow`/`line` → 额外补 `points`（无兜底，缺则渲染异常）
+          - `frame`/`image`/`embeddable`/`freedraw` → **拒绝重建**，落入 `missing`
+            （半成品比缺失危害大，B 的简化版）
+      · **C（长期防御，画布对坏元素免疫）** `elementSync.js:563-647` 新增校验器 +
+        两层接线：
+          - `validateElement(el)` / `filterBrokenElements(elements)`（新导出）
+            必需字段表：`text→[text,fontFamily,fontSize]`、`image→[fileId]`、`frame→[children]`，
+            共有字段 `id`/`type` 须非空字符串、`x`/`y` 须有限数值
+          - **第 1 层** `WhiteboardTool.vue` 的 `sanitizeSceneFromDB()`：
+            用于 `onMounted` 读 `board.scene` + 回收站恢复回写
+          - **第 2 层** `ExcalidrawBoard.vue` 的 `toSafeElements()`：
+            漏斗式收口，覆盖 `initialData` / `onApiReady` 重放 / `setScene` / `watch` **4 个出口**
+            —— 未来任何新路径都绕不过（内部串联 `filterBrokenElements → sanitizeElements`）
+          - 行为：残缺元素**内存剔除不送画布** + `console.warn` 列出 `id/type/缺字段`，
+            **不写库、不删 annotations**（数据仍在信息数据库可见，用户可自行清理）
+      · 离线验证：C 校验器 8 用例全过（含「畸形 text」识别 + 「空文本不误杀」）；
+        A 重建产物 × C 校验器交叉验证 10 类型全通过（证明 A 修完后 C 不会再剔除 A 的产物）
+      · **B（根治，排期）**：`wbElementRaw` 强制留档 —— 删除时若拿不到 raw 就不落回收站、
+        结果报 `missing`，让降级路径**永不发生**。
 
-13. **白板「恢复后被自动删除第二遍」隐性循环**（2026-10-06 发现并修复）
-    成因：Excalidraw 删除元素只是打 `isDeleted: true`，**元素物理上仍留在 scene 数组里**。
-    恢复流程旧版只把记录搬回 annotations/documents，**没碰 scene** →
-    下次 `syncScene` 用 `aliveIds = !e.isDeleted` 判断，该元素不在集合内 →
-    被当作「已删除」**二次写进回收站并再次移出 annotations**。
-    表现：恢复成功 → 刷新/触发同步 → 元素又没了，回收站出现重复记录。
-    修复：`elementSync.js` 新增 `restoreElementsToBoard()`，恢复时按 `wbElementId`
-    擦除 scene 中的 `isDeleted`（精确还原），并回灌画布 + 重建 idMap。
-    ⚠️ 排查同类问题的通用思路：**任何"软删除 + 外部索引"双写结构都可能存在这种
-       「索引恢复了、数据源没恢复」的不一致**，要两边一起验。
+### 15. 性能优化时「顺手加的 emit」可能触发更贵的全量重查（2026-10-07 第 11 轮）
 
-14. **`moveToRecycleBin` 第 5 参数 wbElementRaw**（2026-10-06，用户裁决①补丁）
-    白板元素删除时把 Excalidraw 原始元素对象**深拷贝**存进回收站记录，
-    恢复时若有 raw 则原样塞回 `board.scene`（精确还原，带文字的框不丢文字）；
-    无 raw（老记录）降级为按 lat/lng 近似重建（几何可恢复、**文字会丢**，重建元素带
-    `customData._rebuiltFrom = 'coordinate'` 便于排查）。
-    体积代价：每个元素多 0.5–2 KB，带文字容器约 3–6 KB，回收站常态几十条，可接受。
-    兼容性：新增**可选**参数，地图元素不传 → 记录体积不变（符合「只追加」约定）。
+**现象**：优化回收站时，我在 `watch(visible)` 里顺手加了 `emit('changed')`，
+本意是「开窗即同步外部计数」。查接线才发现 `GisApp.vue:299`：
+```
+@changed="loadAllLayersFromDB"
+```
+而 `loadAllLayersFromDB()`（`GisApp.vue:576-589`）是：
+```js
+for (const tool of allToolsWithWhiteboard.value) {   // 7 库
+  const layers = await getAllLayers(tool.id);
+  for (const l of layers) {
+    const docHtml = await getDocument(tool.id, l.fileId, l.id) || ...  // ← N+1 逐条查
+  }
+}
+```
+**「7 库 × N 图层 + 每图层一次 `getDocument`」的 N+1 全量重查** ——
+比回收站本身慢得多。保留那句 emit = 「打开回收站 → 触发全量重查」，
+**直接抵消整轮优化的收益**。
 
-15. **Vite `INEFFECTIVE_DYNAMIC_IMPORT` 警告**（2026-10-06）
-    在 `elementSync.js` 里写 `await import('./boardStore.js')` / `('./coordinate.js')`
-    会触发该警告——因为这两个模块早已被 `WhiteboardTool.vue`、`boardSettings.js` 等
-    **静态引用**，动态 import 不产生分块收益。→ 直接改回静态 import 即可，build 恢复干净。
+**教训**：
+1. **加 `emit` 前必须先查「谁在监听、监听方做什么」**，不能凭「通知一下更安全」的直觉加。
+   Vue 的 emit 是**同步触发父组件回调**，代价完全由监听方决定。
+2. 性能优化类改动，**任何新增的副作用调用都要先估算监听方开销**。
+3. 已删除该行 + 写注释锁死，防止后人「补全通知」时重新加回来。
 
-16. **🚨 白板「首帧 onChange 空数组 → 全员假删除」时序竞态**（2026-10-06，五层防御已修）
-    根因（**代码逻辑已证明，非猜测**）：子组件 `ExcalidrawBoard.vue` 的 `onMounted` 是
-    **同步**执行，而父组件 `WhiteboardTool.vue` 的 `onMounted` 里有两个 `await`
-    （`ensureCoordinateBasis` / `ensureDefaultBoard`）。于是：
-    ① 画布先挂载，`initialData.elements = []`（此时 `initialScene` 还没读到）
-    ② 画布首帧 `onChange` 回抛**空数组**
-    ③ `syncScene` 用 `aliveIds = list.filter(!isDeleted)` 做集合差 → 空集
-    ④ `idMap` 里每个已登记 id 都判为「已消失」→ **全量软删除进回收站**
-    五层防御（缺一不可）：
-    - **层1** `WhiteboardTool.vue` 新增 `canvasReady` ref + `pendingElements` 暂存；
-      `scheduleSync` 未就绪只暂存不调度，`runSync` 入口硬守卫直接 return。
-    - **层2** `elementSync.js` 的 `syncScene` 新增第 7 参 `allowDelete=true`，
-      把整块「集合差 → 软删除」逻辑包进 `if (allowDelete)` 门控。
-    - **层3a** 模板 `<template v-if="boardReady">` 延迟挂载画布，
-      保证 `initialScene` 有值之后才创建 React 画布（从根上杜绝首帧空场景）。
-    - **层3b** `ExcalidrawBoard.vue` 的 `onApiReady` 里**无条件** `applyScene`
-      重放 `props.initialScene`；`watch` 在 api 未就绪时改为打 `sceneDirty` 标记
-      （旧代码 `if (!api) return` 会把这次变更**永久丢弃**）。
-    - **层4** `syncNow`（手动「立即同步」）同样加 `canvasReady` 守卫，
-      防止首帧期点按钮绕过整个防线。
-    ⚠️ **若后续仍误删**，第一嫌疑是 `sanitizeElements` 静默丢弃含循环引用的元素
-    （`excalidrawBridge.js:57-70`），可先用 `syncNow` 手动同步对照验证。
-
-17. **🚨 白板「新画元素不被登记、状态栏恒为 0 个」（2026-10-06 已定位，未修）**
-    **现象**：白板画任何元素，状态栏永远「元素 0 个 · 已登记 0 · 待换算 0」，
-    信息数据库看不到白板元素。**不是**数据丢失（五层防御的 allowDelete 门控挡住了删除面）。
-    **根因（源码级实证，非猜测）**：链路上有两个「静默丢弃」串在一起。
-    - ① `@excalidraw/excalidraw@0.18.1` 的 `componentDidUpdate`
-      **首行**就是 `let n = this.scene.getElementsIncludingDeleted();`，
-      末尾 `this.props.onChange?.(n, this.state, this.files)` —— 传给宿主的
-      elements 就是这批**元素对象本体**（活对象，非纯数据）。
-    - ② `excalidrawBridge.js:101` 在回调里调 `sanitizeElements(elements)`，
-      而它是 `JSON.parse(JSON.stringify(el))`，**失败即 catch 后丢弃该元素**
-      （只 console.warn，不打断）。元素对象带不可序列化字段 → 逐个抛错 →
-      **整批被丢光** → `onChange` 永远把 `[]` 交给上层。
-    - ③ 于是 `WhiteboardTool.runSync` 里 `alive = [].filter(...)` = 空数组
-      → `stats.total = 0`；`syncScene` 的 alive 集合也为空 → 什么都不登记。
-    **为什么现在才暴露**：上轮修「首帧空数组误删」时给 `syncScene` 加了
-    `allowDelete` 门控，**恰好挡住了这个 bug 的删除面**，于是现象从「全量误删」
-    退化成「安静地不登记」——bug 没消失，只是换了个更隐蔽的表现。
-    ⚠️ **修的时候不要把 allowDelete 门控一起拆掉**，否则立刻回到全量误删。
-    📌 教训：**`catch + console.warn + 静默跳过` 是最难查的一类 bug**。
-    凡是「净化/过滤」函数，宁可返回失败标记让上层可见，也不要悄悄丢数据。
-
-18. **Excalidraw 字体 `normalizeBaseUrl` 源码复核（与坑#17 互补）**
-    从 `node_modules/@excalidraw/excalidraw/dist/prod/chunk-K2UTITRG.js` 逐字复核，
-    **印证坑#19 的结论**（此前是推断，现为源码实证）：
-    - 字体 URI 常量确为 `"./fonts/Xiaolai/…woff2"` 形态（`./` 自带）
-    - `createUrls`：`if (t.startsWith("http")) return [new URL(t)];`
-      → 只有**完整 http(s) URL** 才会被直接采用；随后是
-      `let n = t.replace(/^\/+/, "")`，**只剥开头 `/`，`./` 原样保留**
-    - `normalizeBaseUrl(t)`：`/^\.?\//.test(n)` 命中则
-      `new URL(n.replace(/^\.?\/+/, ""), window?.location?.origin)`，
-      最后**无条件** `` n = `${n.replace(/\/+$/, "")}/` `` ← **恒追加尾斜杠**
-    - HTTP 404 日志字符串为 ``Failed to fetch font family "${family}"``（与坑#17 一致）
-    → 结论不变：只能传「**目录前缀且去尾斜杠**」的 base，由 Excalidraw 自己补 `/`。
-    📌 可靠替代方案（若动态前缀再出问题）：把 `EXCALIDRAW_ASSET_PATH` 设成
-    **完整 `http(s)://` URL**，可绕过 `normalizeBaseUrl` 全部改写；
-    但 Electron `file://` 下无 http origin，**不适用**，故仍采用目录前缀方案。
-
-19. **🚨 Excalidraw 自托管字体「双重嵌套 / 尾斜杠」路径陷阱**（2026-10-06，已修）
-
-
-    **先纠一个假结论**：上一轮曾怀疑 `.woff2` 损坏（HTML/404/LFS 指针）。
-    实测**230 个被引用字体字节头均为 `wOF2` 魔数、且与 npm 包内原件 MD5 逐一相同**
-    → **文件是好的，纯粹是 URL 解析问题**。
-    真根因（读 `chunk-K2UTITRG.js` 源码 + Node 复算双重验证）：
-    - 字体 URI 为 `'./fonts/Excalifont/xxx.woff2'`（**自带 `./`**）
-    - `createUrls`: `n = uri.replace(/^\/+/, '')` → **只剥开头 `/`，`./` 原样保留**
-    - `normalizeBaseUrl`: base 以 `./` 或 `/` 开头 → `new URL(base.replace(/^\.?\//,''), origin)`；
-      最后**恒追加尾斜杠** `base.replace(/\/+$/,'') + '/'`
-    - `file://` 下 `window.location.origin === 'null'`（**不可解析**）→ 浏览器退化为页面 URL
-    → 结果矩阵（旧值 `'./excalidraw-fonts/'`：**两种模式都双重嵌套、全坏**）：
-
-    | base | dev | 打包 |
-    |---|---|---|
-    | `'./excalidraw-fonts/'`（旧） | ❌ `/excalidraw-fonts/fonts/` | ❌ 同左 |
-    | `'/'` | ✅ | ❌ `…/dist/index.html/fonts/`（**index.html 被当目录**） |
-    | `'/fonts/'` | ❌ `/fonts/fonts/` | ❌ `/fonts/fonts/` |
-    | **目录前缀（正解）** | ✅ `…/fonts/` | ✅ `…/dist/fonts/` |
-
-    ✅ **正解**（`index.html`）：取「文档所在目录」并**去掉尾斜杠**，交给 Excalidraw 自己补回：
-    ```js
-    window.EXCALIDRAW_ASSET_PATH =
-      window.location.href.replace(/[?#][\s\S]*$/, '').replace(/[^/]*$/, '').replace(/\/+$/, '');
-    // dev → 'http://localhost:5173'        打包 → 'file:///…/dist'
-    ```
-    ⚠️ 配套：字体目录必须是 `public/fonts/`（**不能**叫 `excalidraw-fonts`）；
-    因为 URI 里已写 `fonts/`，目录名再叠一次就是 `fonts/fonts/`。
-    📌 教训：**下「文件坏了」结论前先验魔数 + 与原件哈希比对**，否则白花时间重拷文件。
-
-20. **🚨 「守卫拦住了」≠「守卫写错了」—— 诊断方法论的坑（2026-10-06，连错两轮）**
-
-    现象：白板新画元素不登记，状态栏恒「元素 0 个」。
-    **两轮误判**：
-    - 第 1 轮：读源码看到 `onChange` 收到活对象 + `sanitizeElements` 用
-      `JSON.parse(JSON.stringify)` 且 `catch` 静默丢弃 → 断定"净化丢元素"。
-    - 第 2 轮：看到 `canvasReady` 守卫挡住 `runSync` → 断定"守卫写过头了"。
-
-    两次都是**从现象往下游/上游单向猜**，没先测断点。加日志一测即明：
-    ```
-    [诊断] onChange.elements: 1 | api.getSceneElements(): -3 | sanitize 后: 1
-    ```
-    → 净化**没问题**、`onChange` **收到了**；真正断点是 `canvasReady` 恒 false，
-    因为**它依赖的 `api-ready` 信号从未到达**（`onExcalidrawAPI` 从未触发）。
-
-    📌 **教训（方法论，比 bug 本身更值钱）**：
-    1. **先用日志划定断点区间，再读代码解释断点** —— 不要反向。
-    2. **区分「逻辑错」与「输入缺失」**：守卫拦住了，可能不是守卫的判据错，
-       而是它等的信号根本没来。查守卫前先查**它依赖的输入是否到达**。
-    3. 对比日志要找**独立取数路径**（如 `onChange.elements` vs `api.getSceneElements()`），
-       同一路径的自证没有价值。
-    4. 报"没触发"类问题时，**在触发点本身埋探针**（如 `onExcalidrawAPI` 首行），
-       而不是在它下游猜。
-
-21. **🚨 Excalidraw 0.18.x 的 API prop 叫 `excalidrawAPI`，不是 `onExcalidrawAPI`（2026-10-06）**
-
-    现象：`onExcalidrawAPI` **从不触发**（`api.getSceneElements()` 恒 `-3`），
-    但 `onChange` 一切正常 —— 组合很诡异。
-
-    根因：**prop 名错了**。0.18.1 源码
-    （`node_modules/@excalidraw/excalidraw/dist/prod/index.js`）：
-    ```js
-    let { excalidrawAPI: n, viewModeEnabled, … } = t;      // t = props
-    typeof n == "function" ? n(d)
-                           : console.error("excalidrawAPI should be a function!")
-    ```
-    传错名**不抛错、不警告**，只在控制台留一句
-    `excalidrawAPI should be a function!` —— 极易被刷屏埋掉。
-
-    📌 **教训**：
-    1. `onChange` 正常 **不代表** 其他 props 名字对 —— 它们是**各自独立**的 props。
-       「一个回调工作、另一个从不触发」时，第一嫌疑就是**名字写错**（版本改名）。
-    2. 报"某 prop 从不触发"，**先去 `node_modules` 的 `dist/prod` 搜真实的 prop 解构**，
-       不要只信文档/记忆。搜索关键词用**报错文案**（这里 `should be a function`
-       一次命中），比搜 prop 名更快（minified 后可能被改写成局部变量名）。
-    3. 升级 Excalidraw 主版本时，**逐个核对 props 名**（0.17 `onExcalidrawAPI` →
-       0.18 `excalidrawAPI` 是破坏性改名）。
-
-22. **🚨 静态服务器 / 预览服务器的「目录兜底」会掩盖 404，误导验证（2026-10-06）**
-
-    现象：`/fonts/…` 与 `/gis/fonts/…` **都返回 HTTP 200**，
-    于是「验证通过」——但真实浏览器里 `/gis/fonts/` 实际是 404。
-
-    根因：`vite preview` / 许多静态服务器对未知路径会**回退到 `index.html`**（SPA fallback），
-    于是 `/gis/fonts/x.woff2` 返回的是 **HTML 而不是字体** → 200，
-    但浏览器 `<font>` 解析失败 → `Failed to decode downloaded font`。
-
-    📌 **教训**：
-    1. **用 HTTP 状态码验证静态资源 404 是不可靠的**（SPA fallback 会兜底成 200）。
-       要看**响应体**（是不是 `<!doctype html>`）或 **Content-Type**。
-    2. 验证这类问题应当**跑真实浏览器**（本项目用 Electron 作无头宿主，
-       `session.webRequest` 记录实际 `.woff2` 请求 URL + 页面里 `window.EXCALIDRAW_ASSET_PATH`
-       的真实取值）—— 这才是一手证据。
-
-23. **🚨 SPA 路由前缀 ≠ 静态资源目录（2026-10-06，字体 /gis/fonts/ 404 的根因）**
-
-    现象：`Failed to decode downloaded font: http://localhost:5173/gis/fonts/…`
-    —— URL 里莫名多了一层 `/gis/`。
-
-    根因：`EXCALIDRAW_ASSET_PATH` 由「页面 URL 所在目录」推算，但本项目用
-    `createWebHistory()`，白板页是 `…/gis/whiteboard` → 取目录得 `…/gis`。
-    **`/gis` 是路由前缀，不是真实目录**；而 `public/` 下的静态资源恒定挂在**站点根**。
-
-    📌 **教训**：
-    1. **静态资源基准与「当前路由」无关**，别用 `location.pathname` 推算资源目录。
-       `http(s)` 下应直接用 `location.origin`。
-    2. `file://` 下 `location.origin` 是 `file://`（不可解析），**必须单独分流**
-       （退化为「文档所在目录」）—— 「一种算法打天下」在这里行不通。
-    3. 本项目 `vite.config.js` 是 `base: './'`，但 `public/` 资源在 dev 下仍在根 ——
-       **`base` 只影响打包产物引用，不影响 `public/` 的 dev 挂载点**。
-
-
-
----
+**同类风险点（供后续排查）**：`emit('changed')` → `loadAllLayersFromDB()` 这条链路
+在**任何**高频交互里都要谨慎（它是全局 N+1）。回收站里只在「用户实际增删后」才触发。
 
 ## 六、待办
+
+### 🚀 第 11 轮：回收站性能 + P1（DeepSeek 已裁决，分两批）
+
+**第一批：回收站性能** ✅ 代码完成，**待用户实测**
+- [x] 方案 2：`loadItems()` 7 库串行 → `Promise.all` 并发（逐库 catch 兜底）
+- [x] 方案 3：新增 `removeItemLocally()`，恢复/彻底删除/清空改**缓存局部更新**（不再全量重载）
+- [x] 方案 4：`getBounds`/`getCanvas` 合并并发读
+- [x] 开窗无条件 `loadItems()` + 「关键，勿删」注释
+- [x] 顺带修 `handlePurge`/`handleClearAll` 漏 `emit('changed')`
+- [ ] **⏳ 待用户实测**：①开窗变快 ②连恢复多条不卡 ③恢复后刷新列表正确
+      ④彻底删除/清空后信息数据库正确刷新
+
+- [x] ✅ **【第 16 轮已修】清理按钮 bug 1 + 判据改为 wbElementId 桥接**（DeepSeek 裁决）
+      · bug 1：删掉 `if (ghosts.length === 0) return;` → **幽灵判据与回收站清理解耦**
+        （幽灵=0 时**不写** board.scene，只清回收站残留）
+      · 判据：`sceneIds.has(record.layer.wbElementId)` ← **不可用 annotationId 直比 scene[].id**
+      · 保留策略：不在 scene → 真·已删 → **保留**；无桥接 id → **保守保留**
+      · 逐条 `purgeFromRecycleBin(WB_TOOL_ID, r.fileId || safeFileId(), r.annotationId)`
+        ⚠️ 该函数签名是 (toolId, fileId, annotationId)，**不是**传记录对象
+      · 验证：逻辑测试 **10/10**（含反证：annotationId 方案识别出 0 条）
+        + `npm run build` ✅ 1.74s
+- [x] ✅ **【第 17 轮已实施】缺陷 2 修复：方案 T（乐观并发控制）+ F（按 canvasDirty 分流）**
+      **`boardStore.js`**：`saveBoard(board, opts)` 加 `opts.baseUpdatedAt`
+        · 不传 = 旧行为（**向后兼容**，其余调用方零修改）
+        · 传了且 `existing.updatedAt !== base` → **拒绝写入** `{saved:false, reason:'stale'}`
+        · 返回值改为 `{saved, reason?, updatedAt?}`（旧调用方忽略即可）
+        · 🐛 **单调修订号**：`now = Math.max(Date.now(), (existing.updatedAt||0)+1)`
+          ⚠️ 用 `Date.now()` 会**毫秒碰撞**（读写是两个独立 await 事务、中间无锁）
+            → CAS 误判「没变过」→ 静默失效（实测复现，见 `_verify` t1 首跑失败）
+      **`WhiteboardTool.vue`** 三件套：
+        · `lastKnownUpdatedAt`（onMounted 读后 / 每次写成功后刷新）
+        · `canvasDirty`（handleChange 置 true / runSync 成功后 false / refreshDataFromDB 后 false）
+        · `saving` 进程内写互斥（**只放组件内，不放 boardStore**）
+        · `sceneApplyLock` + `SCENE_APPLY_LOCK_MS=300`：排除 setScene 回灌时的 onChange 回抛
+          ⚠️ **没有它 t1 是假的**：回抛 → canvasDirty=true → 走权威写 → 旧快照照样覆盖
+        · `onBeforeUnmount` 分流：false → 乐观写(传base，可被拒) / true → 权威写(不传base)
+        · 新增 `persistBoardAuthoritative(sceneOverride)`：**先 getBoard() 取完整记录再覆写**
+          ⚠️ 不能只传 scene —— `saveBoard` 的 `appState: board.appState || {}` **无 existing 兜底**，
+            只传 scene 会把 appState 清成 `{}`
+        · `lastKnownUpdatedAt === undefined`（基线未知）+ 画布无改动 → **直接跳过写入**
+          （否则乐观写退化成旧的无条件覆盖，修复失效）
+      **`refreshDataFromDB`**：改为**先权威回写、再 setScene**（否则恢复路径只刷画布没写库
+        → 「库已更新→乐观写被拒」机制**不成立**，t1 修不掉）
+      验证：逻辑测试 **15/15** + `npm run build` ✅ 1.88s；`elementSync` 零改动
+      待确认：① 单调修订号（边界外必要修补）② refreshDataFromDB 先写库 ③ 300ms 窗口
+- [x] ✅ **【第 19 轮已完成】缺陷 1 · 第 1 步 E1：消灭裸写**
+
+      **① `elementSync.js` `finalizeRestore`（原 `:762-773`）删掉裸写**：
+      · 原来 `if (revived>0 || rebuilt>0) await saveBoard({...scene})` —— **不传 baseUpdatedAt**
+        ⇒ 绕过 boardStore 的 CAS（`boardStore.js:88` `opts.baseUpdatedAt !== undefined && existing`）
+      · 现在只 `result.scene = scene; return result;` —— **本函数只算 scene、不落库**
+      · `saveBoard` 的 import（`:26`）**保留**（已注释说明；Vite 会 tree-shake，零风险）
+      · ⚠️ 新增**契约**：任何调用方都必须自行持久化 `result.scene`
+
+      **② `RecycleBinModal.vue`（DeepSeek §二-2 未预见的第二处）**：
+      · **关键发现**：`refreshDataFromDB` 是「**重新从库读**」型入口，
+        `notifyWhiteboardRefresh()` 只调 `window.__wbRefreshHook()` **不传参**
+        ⇒ 它**拿不到** restore 在内存算出的 scene
+        ⇒ 若只删 `elementSync` 的裸写而不改这里 → **恢复结果永远不落库**（恢复完全失效）
+      · 新增 `persistRestoredScene(boardId, scene)`：先 `getBoard()` 取全量 → **权威写**（不传 base）
+        ⚠️ 必须 `getBoard()` 兜底：`saveBoard` 的 `appState: board.appState || {}` **无 existing 兜底**，
+          只传 scene 会把 appState 清成 `{}`
+      · **调序：先写库 → 再 `notifyWhiteboardRefresh()`**
+        ⚠️ 顺序不可反：先 notify 的话，白板读出【旧 scene】灌进画布、
+          且其内部权威写会用旧 scene **覆盖库** → 恢复白费
+      · `handleRecover` 增加 `_persisted.saved === false` 提示「⚠️ 场景落库未成功」
+      · import 增加 `getBoard, saveBoard`
+
+      **正向收益（顺带解决）**：
+      · 恢复**不再依赖「白板正开着」**（白板未挂载时库也已正确）
+      · 消灭「库变、基线不变」窗口 ⇒ `onBeforeUnmount` 乐观写正确被拒
+      · `appState` 不再被清空
+
+      **验证**：逻辑测试 **11/11**（含旧行为丢链复现 3 项 + E1 修复 3 项 + 对照组 1 项 +
+        appState 3 项 + 白板未开 1 项）+ `npm run build` ✅ 1.86s；临时脚本已清理
+      **全仓 saveBoard 调用点**：已无「非权威 + 不传 base」的裸写 ✅
+
+      ⏳ 待裁决 4 项：① 第二处改动是否认可 ② 未使用 import 保留/删 ③ `_persisted` 命名 ④ 进第 2 步 D
+
+- [ ] 📐【下轮·第 2 步 D】**缺陷 1 本体：让 scene 收敛**（等用户实测 E1 后再做）
+      `runSync` 删除分支（`elementSync.js:260-295`）在 `saveAllLayers` 之后，
+      把**已成功入档**的 `elementId` 从 `board.scene` 剔除
+      ⚠️ ① **只在 `moveToRecycleBin` 成功后剔除**（现有 `catch {}` 吞错 → 剔了=数据凭空消失）
+      ⚠️ ② **不只过滤 isDeleted**，只剔本轮确认已入档的（<800ms 防抖窗内未同步的不能动，
+        否则下次 `runSync` 找不到它、`rawById` 取不到）
+      ⚠️ 情况 1 代码（`:532-541`）**保留** —— D 之后它自然失效、无输入（零成本兼容层）
+
+- [ ] 📐【第 3 步】**军规哨兵**：`finalizeRestore` 的 `result.missing` 必须**可见**
+      （warn + 在 `refreshDataFromDB` 上报），让「老数据恢复不了」从静默变成有声
+
+
+- [x] ✅ **【第 18 轮已交付设计·已获裁决通过】缺陷 1 修法 = G 方案（E1 + D + 情况 2 军规）**
+
+      🔑 **三条「读代码后修正认知」的事实**（第 18 轮核出，推翻我自己的旧判断）：
+      1. **`wbElementRaw` 每次删除都必然有值**（我上轮说「可能缺失」是错的）
+         · `elementSync.js:265-266` `rawById` 由**当前 scene 全量**建立
+         · `:281` `moveToRecycleBin(..., rawById.get(elementId) || null)`
+         · 删除只打 `isDeleted` 标记、**不物理移除** → 元素必然还在 `list` 里 → 必然命中
+         · ⇒ 「老记录无 raw」只指**补丁上线前**的历史记录（本轮清理的 2 条就是）
+         · ⇒ **情况 2 从此「除历史遗留外永远可靠」**
+      2. **畸形 text 不是「情况 1 物理移除」造成的**（修正 MEMO 坑#14 的成因叙述）
+         · `finalizeRestore` 降级重建（`:650-760`）**就在 `restoreElementsToBoard` 内部**
+         · ⇒ 情况 1 是它的**前置兄弟分支**，二者**互不干扰**
+         · ⇒ **删掉情况 1 不会让降级路径变多** → 「情况 2 替代情况 1」**零新增风险**
+      3. **CAS 拦不住 `finalizeRestore` 的裸写**（`elementSync.js:764` 不传 baseUpdatedAt）
+         · 实测时间窗：乐观写(CAS) **全偏移都拒**（0/1/50/199/200/201/500/1500ms）
+         · 裸写在 **全偏移都回灌**
+         · ⇒ 上轮我说「0ms 是漏洞」= **悲观误判，已撤回**（单调修订号已解决）
+         · ⇒ 但**裸写必须消灭，否则 T 方案正确性不闭合**
+
+      ⚠️ **危害 1（唯一致命）= 不可逆 + 静默的数据丢失**：
+      `finalizeRestore` 不写库的路径（`result.missing` 分支）+ 基线未变
+      → 乐观写**匹配成功** → 旧快照带 `isDeleted=true` 覆盖 → 元素永久消失，
+      且 UI 显示「恢复成功」⇒ **静默**。
+      （注意：`revived>0 || rebuilt>0` 时会裸写 → 库变、基线不变 → 被拒；✅ 这条已被 T 修好。
+        危险的是**不写库**的那条分支。）
+
+      📋 **推荐 G 方案（三步，可独立验收）**：
+      · **第 1 步 E1（优先级最高）**：`finalizeRestore` **不再写库**，只返回 `result.scene`；
+        由 `refreshDataFromDB` 用**已有的 `persistBoardAuthoritative`** 统一权威写
+        ⇒ 它是 restore 的**唯一**消费入口，且「先写库再 setScene」两动作在一起
+        ⇒ **裸写漏洞从根上消失**
+        （备选 E2 `bypassCas:true` 显式声明；E3 `writeEpoch` 不需要）
+      · **第 2 步 D**：`runSync` 删除分支（`:260-295`）在 `saveAllLayers` 后，
+        把**已成功入档**的 `elementId` 从 `board.scene` 剔除
+        ⚠️ ① **只在入档成功后剔除**（`moveToRecycleBin` 抛错时 `catch{}` 吞掉 → 剔除=数据消失）
+        ⚠️ ② **不只过滤 isDeleted**，只剔本轮已入档的（<800ms 防抖窗内未同步的不能动）
+      · **第 3 步 军规哨兵**：`result.missing.length>0` 必须**可见**（warn + 上报），
+        让「老数据恢复不了」从静默变成有声音
+
+      ❌ **明确不做**：不动 `captureScene`（`:246`，策略不该写在通用桥接）·
+        不做 C（物理移除，风险>收益）· 不做 B（载入即永久剔除 → **永久杀死**历史恢复能力）·
+        不动 T / allowDelete / 闸门③ / A / C
+      ✅ **情况 1 代码保留**（`:532-541`）—— 第 2 步后自然失效（无输入），
+        留着是**零成本兼容层** ⇒ 目标是「让情况 2 承接主路径」，**不是「删掉情况 1」**
+
+      🔎 **主动纠正上轮错误论断**：上轮我写「`restoreRecycledElements` 走情况 2 会静默丢文字」
+        —— **是错的**。`elementSync.js:787-801` **明确构建了 `rawMap`** 并透传。
+        全仓无一条路径丢 raw ⇒ 真正风险不是「丢 raw」，而是**「raw 缺失时静默降级」**
+        （问题在**缺哨兵**，不在传递链）。
+
+- [ ] ⏳ **【等用户确认】清理后三处一致**（画布 6 / 列表 6 / 回收站 0）
+      DeepSeek §七：确认后才进下一任务
+
+      `saveBoard(board, { baseUpdatedAt })` **乐观并发控制**
+      · 核心：`saveBoard` 内部已 `await getBoard()` → `existing.updatedAt` 就是库版本
+      · 调用方传「快照基于哪个版本」；库被别人改过 → **拒绝过期写入**
+      · **权威写不传基线**（restoreElementsToBoard / 清理工具）→ 强制生效 → 不牺牲 T1 情况1
+      · **乐观写传基线**（onBeforeUnmount 传 `lastKnownUpdatedAt`）→ 恢复后立刻关不再回灌
+      · 覆盖 t1/t2/t3；**零新字段、零时间常量**（比 1.5s 保护窗硬）
+      · 改动点：`boardStore.js` 一处 + `WhiteboardTool` 维护基线 + 进程内写互斥
+      · 备选 **T+A+F**（A 快照比较 / F 脏标记，仅减 IO）；C 需时间常量不推荐
+      · 待裁决：① 选哪个方案 ② 调用点改动是否批准 ③ 被拒写的边界取舍 (a)/(b)/(c) ④ 缺陷 1 是否一并做
+- [x] ✅ **【第 16 轮已修】清理按钮 bug 1**（历史记录，详情见上方第 16 轮条目）
+- [x] ✅ **【第 15 轮已解决】回收站 2 条记录的「活性」判定**（DeepSeek 用用户截图定案）
+      **结论：那 2 条对应的元素确实活着**（在 annotations 里）
+      → 病征 = 「**元素活着但回收站还有记录**」→ 可安全「彻底删除」
+      → 判定脚本可省；第 16 轮已把判据落进临时清理工具（wbElementId 桥接）
+- [x] 📌 **【第 15 轮已解决】bug 2 真身（目标状态选错）**：
+      我的判据方向是「**scene 有、annotations 无**」（假幽灵），
+      而病征是「**annotations 有、recyclebin 也有**」（回收站未清）→ **目标状态选错了**（第 16 轮已按裁决改为 wbElementId 桥接）
+      ❗ 但修法**不能**照搬 DeepSeek §四：
+        · 「物理移除」若用 `annotationId` 比 `scene[].id` → **恒不匹配，是 no-op**
+        · 必须用 **`wbElementId`** 桥接（scene 存 nanoid，recyclebin 存 `WB.xxx`）
+- [ ] 🚨 **【重要提醒】缺陷 2 不修，回收站脏数据会再生**：
+      `onBeforeUnmount` 旧快照覆盖 board.scene → 元素回退成 isDeleted=true
+      → 下次 runSync 又写一次回收站 → **清了还会再来**
+      → **「清理完成」的判据必须包含「缺陷 2 已修」**
+- [ ] 🧪 **【临时代码·待移除】白板「清理幽灵元素」按钮**（第 14 轮加，2026-10-07）
+
+
+      `WhiteboardTool.vue`：状态栏按钮 + `handleCleanGhostElements` + `ghostCleaning` ref
+      + 2 个导入（getAllLayers / clearRecycleBin）+ `.wb-btn-danger` 样式
+      行为：读 board.scene → 与 annotations 的 id+wbElementId 双集合比对 → 找幽灵
+      → **物理 filter 移除** → saveBoard 写回 → clearRecycleBin(WB) → refreshDataFromDB
+      → **排查结束后必须整块移除**
+- [x] ✅ **白板「画布 6 / 列表 4 / 回收站 2」根因已定案**（第 14 轮）
+      🎯 **两个关键认知**：
+      ① **`board.scene` 里的 id 是 Excalidraw nanoid，与 annotations 的 `WB.xxx` 不同源**
+         —— 必须经 `wbElementId` 桥接比对（我上轮的「bound text」假设**已撤销**，用户是 6 个矩形）
+      ② **`runSync` 从不写 `board.scene`**（只写 recyclebin/documents/annotations）
+         → board.scene 落库只有两处：`onBeforeUnmount`(:855) 与 `restoreElementsToBoard`(:764)
+      **真因（时序竞争）**：
+      · t1 点恢复 → 情况1 擦 isDeleted → saveBoard(scene6) ✅ → refreshDataFromDB → setScene
+      · t3 若 React **尚未消化 setScene** 时用户切走/刷新
+        → `onBeforeUnmount` 取到**旧快照** → saveBoard(旧 scene) **覆盖** t1 的新数据 💥
+      · 而 annotations/recyclebin 是即时写的、不被覆盖 → 三处失去统一
+      **加重因素**：`captureScene`（excalidrawBridge.js:246-254）**不过滤 isDeleted=true**
+        → 软删残留随每次关闭白板被反复持久化，**库永远清不掉**
+- [ ] 🚨 **两个设计级缺陷待裁决（长期修法，勿擅自改）**：
+      【缺陷 1】`isDeleted` 元素被持久化进 board.scene
+        → 修法：写回前过滤；⚠️ **但会破坏 T1「情况 1」精确还原**
+          （情况1 正是依赖「isDeleted 元素还在 scene 里」）→ **必须先补替代路径**
+      【缺陷 2】`onBeforeUnmount` 用画布实时快照而非已落库的权威数据
+        → 修法：版本化比较写入，或 refreshDataFromDB 后加 ~1.5s 保护窗
+      → **两项均属「改既有逻辑」，等 DeepSeek 裁决**
+
+      `WhiteboardTool.vue` L395-405：`refreshRegisteredList()` 末尾加 `if (window.__WB_MONITOR__)`
+      打印 6 元素 wbX/wbY/wbW/wbH/lat/lng。**零逻辑改动**，开关默认关。
+      → **6 元素排查结束后必须整块移除**（DeepSeek 已认可为临时代码）
+- [ ] 🔍 **白板「画布 4 个 / 登记 6 个」排查**（进行中，观察阶段，禁止急着修/清）
+
+**第二批：P1（AI 批量导入 + 富文本）** —— 等第一批实测 + 6元素排查收尾后开工
+
+- [x] **P1.0 `node.type` 判断点清单已交付**（第 12 轮，只读）→ 见 `to-deepseek.md`
+      结论：**传 `wb-*` 可行，无需映射裸 type**。全文件仅 4 处判断：
+      · **L22** `node.type !== 'marker'` → 传 `wb-*` 走 true（样式面板内，被 hideStylePanel 覆盖）
+      · **L27/L31** `=== 'polygon'||'rectangle'||'circle'||'ellipse'` → 传 `wb-*` 走 **false**
+        （填充色/透明度控件不显示；仅当将来开放样式编辑才需映射）
+      · **L102** `{{ node.type }}` 纯展示 → 会显示「wb-rectangle」
+      ⚠️ L22 是 `v-if`/`v-else` 二选一，传 `wb-*` 会落入 **v-else（20 种地图图标）**分支
+        → **`hideStylePanel` 必须用 `v-if` 整块移除，不能用 `v-show`**，否则白板元素会看到地图图标选择器
+      ✅ **`docHtml` 路径完全不依赖 type**：`documentStore.js` 主键是 `${fileId}_${annotationId}`，
+         `type` 从不参与 → `WB.00012` 编号正常存取，无需适配
+- [ ] **⏳ 等 DeepSeek 确认第 12 轮 4 项问题**：
+      ① 传 `wb-*` + `hideStylePanel`（v-if）是否同意
+      ② `node.lat/lng` 的 `v-if` 收紧为双非空（**防 `undefined.toFixed` 崩面板**）是否批准
+         —— 这是第 12 轮新发现的**真实风险**：白板元素 lat/lng 由 `canvasToLatLng` 反算，
+         混合来源时可能只算出一个 → 现有 `v-if="node.lat"` **没挡 lng**
+      ③ L102 显示内容是否改（改属「改既有逻辑」）
+      ④ 选择回调用方案 X（复用 `onChange` + `appState.selectedElementIds`，零新增接口）
+         还是方案 Y（新增 prop）
+- [ ] P1.1 新建 `src/groups/whiteboard/utils/recordToElement.js`
+      · 裁决 2：坐标语义选 **A（按 bounds 换算）**，`bounds` 缺失 → **拒绝导入 + 告警**（不做 B 兜底）
+      · 裁决 3：统一生成 **`text` 元素**，三条防护：
+        ① 复用 A 方案 **9 个 text 字段一个不少**（否则重演坑#14 毒元素）
+        ② 生成后过 C 方案 `validateElement` 自检，不通过**拒绝写入 + 告警**
+        ③ 打标记 `customData.fromAiImport: true`
+- [ ] P1.2 `WhiteboardTool.vue` 挂 `AiImportPanel` + `handleWbAiImported`
+      · 用 `inline` 内联在 `.wb-toolbar`，**不要照抄地图侧的 `Teleport to="#tool-header-slot"`**（白板无此 slot）
+      · `toolId = WB_TOOL_ID`，`fileId` 用缺省 `'legacy-file'`
+      · ⚠️ `setScene` 是**整体替换** → 必须 `当前 scene + 新元素` 合并
+      · ⚠️ 导入元素**无 `wbElementRaw`** → 靠 `onChange → syncScene` 正常登记，**不要走恢复路径**
+- [ ] P1.3 `ExcalidrawBoard.vue` 加 `onSelectionChange` 透出（裁决 4：白板自己的组件，允许）
+- [ ] P1.4 `WhiteboardTool.vue` 挂 `MarkerDocPanel` + 加 `hideStylePanel` 显式 prop
+- [ ] **P1.5（改进，非首版）**：AI 导入可选生成矩形/图形，而非全是 text（首版求简单稳）
 
 ### 🔜 施工顺序（用户已定，2026-10-06，按序推进）
 - [x] **第 0 步：修「新画元素不被登记」bug —— ✅ 用户已验证生效**
       正确根因（**前两轮误判已作废**）：`canvasReady` 绑在 `api-ready` 上，
       但 `onExcalidrawAPI` 从未触发 → 守卫永远 false → 元素从不登记。
       修复内容见「三-0」的「🩹 白板主 bug 修复」+「🚨 闸门③」。
-      ⚠️ **`allowDelete` 门控一行未动**（只在调用侧加了 `alive.length > 0` 前置条件）。
+      ⚠️ `allowDelete` 门控曾于第 0 步在调用侧加 `alive.length > 0` 前置条件，
+      **该条件已于第 6 轮证伪并改为 `firstNonEmptyChangeSeen`**（见坑#13）。
       ✅ 用户实测：状态栏「元素 1 · 已登记 1」、信息数据库出现 **WB.00012**。
 - [x] **第 0.5 步：三项收尾（2026-10-06 完成，均已实测）**
       - [x] **残留① 字体 404**：`/gis/fonts/` → 已修为按协议分流（http 取 origin /
@@ -561,12 +853,87 @@ Excalidraw 侧走 `else` 分支只打一句 `console.error("excalidrawAPI should
       结论：**0.18.1 的 prop 名是 `excalidrawAPI`**，旧代码传 `onExcalidrawAPI`（0.17 旧名）
       → Excalidraw 只打一句 `excalidrawAPI should be a function!` 并跳过注入。
       详见「三-0」的「✅ 问题 2 根因修复」。
-- [ ] **第 2 步（P0 界面）← 下一步开工**：图形列表 + 信息栏，对齐鹰眼完整度
-      （鹰眼侧有 `InfoPanel.vue` / `BaseMapTool.vue` 的分组列表 + 信息栏，白板侧要对等）
+- [x] **第 2 步（P0 界面）—— 块 1/2/3/4 已完工 + 第 5 轮架构级修复，`npm run build` 通过，待用户实测三链**
+      交付物：
+      - 块 1：`LayerListPanel.vue` 加 `hideWindowHint` prop（默认 false，**纯增量**，
+        不影响地图侧 8 个工具；唯一真实挂载点是 `BaseMapTool.vue:65`）
+      - 块 2：新建 `src/groups/whiteboard/WhiteboardPanels.vue`（薄包装，90 行）
+        · 图形列表 → `Teleport` 到 `#tool-header-slot`（与地图同一挂载点）
+        · 信息栏 → 留工具内容区做浮层（InfoPanel 根节点就是 MapPanel，单根不能 Teleport）
+      - 块 3：`WhiteboardTool.vue` 模板插入 `<WhiteboardPanels>`，
+        **插入点 = `.wb-canvas-wrap` 内、与 `v-if="boardReady"` 同级**。
+        🚨 关键：`.wb-canvas-wrap{position:relative}` 是最近的 positioned 祖先，
+        MapPanel 非 inline 是 `position:absolute` → 只有放这里信息栏才落「画布左下角」。
+        放 `.whiteboard-tool` 直接子级（无 position）会让包含块上溯到 GisApp 的
+        `.tool-content`（position:relative + **overflow:hidden**）→ 既跑位又可能被裁。
+        与 v-if 同级还能让 Teleport 不被 `boardReady` 延后。
+      - 块 4：`WhiteboardTool.vue` script 新增
+        `wbPanelLayers` / `wbPanelGroups` computed、`syncSelectedToInfoPanel`（画布点选→信息栏）、
+        `whiteboardLocate`（列表→画布）、`handleWbUpdateGroup`（改 `customData.group`）、
+        `handleWbDeleteElement`（**只打 `isDeleted` 标记**）、`handleWbLayerUpdate` / `noop` 系列。
+      - **第 5 轮（核心修复）**：`elementSync.js` 更新分支补 `group` 同步（详见坑 #12）
+        + 删除 `WhiteboardTool.vue` 的 `wbGroupOverride` 三件套（库值已正确，覆盖层成新隐患）。
+      ✅ `npm run build` 通过
+- [ ] **第 2 步实测（三条链，用户执行）** —— 第 5 轮修完后的验收
+      - 链 A（删除/恢复，上轮失灵的）：画矩形 → 列表删除 → 回收站能看到 → 点恢复 → 元素回到画布
+      - 链 B（改组，本轮关键）：列表改组 → 立刻显示新组 + 下拉出现新组 → **刷新后仍在新组**
+      - 链 C（点选联动）：画布点选任一图形 → 左下角信息栏自动选中
+- [ ] **第 2 步续：filter-group 选项 3**（DeepSeek 裁决：必须等上面三条链实测通过后才动）
+      做法：`WhiteboardTool` 在把数据传给面板前先过滤 `wbPanelLayers`，
+      **零改动面板本体**（避免影响地图侧）
 - [ ] **遗留待办**：评估「字段级容错」是否值得保留
       （它现已证明与主 bug 无关；若无必要建议回退，避免留无用复杂度）
 - [ ] **第 3 步（P1）**
 - [ ] **第 4 步（P2）**
+
+### 🧪【临时调试】用完必删清单（2026-10-07，TypeError 应急）
+
+> 背景：画布因残缺元素渲染崩溃后，用户无法通过 UI 删除元素，故加了应急清空按钮。
+> 用户清完 WB.00023/24 后**立即执行以下 4 项删除**（`grep -n '临时调试'` 定位全部 11 处标记）。
+
+- [ ] **删①** 模板 `<button class="wb-btn wb-btn-debug" …>` 整块（含上方注释块）
+- [ ] **删②** 脚本 `handleTempDebugClear` 函数 + `const debugClearing = ref(false)`（含上方大段注释）
+- [ ] **删③** 样式 `.wb-btn-debug` / `.wb-btn-debug:hover` 两条
+- [ ] **删④** 导入 `import { clearAllLayers } from '../geo/utils/annotationStore.js';`
+- [ ] 删完 `grep -n '临时调试' src/groups/whiteboard/WhiteboardTool.vue` 应返回 **0 条**
+- [ ] 删完 `npm run build` 必须通过
+
+### ⏸️ 待 DeepSeek 裁决：TypeError 正式修法（2026-10-07，根因已确认）
+
+> 根因见「五-14」。
+
+- [x] **候选 A（最小）✅ 第 8 轮已完成**：降级重建按 `wbType` 分派模板
+      —— text 补全 9 个必需字段；rect/ellipse/diamond 直接用；
+      arrow/line 补 `points`；frame/image/embeddable/freedraw **拒绝重建**（落入 missing）
+- [x] **候选 C（防御）✅ 第 8 轮已完成**：`validateElement` / `filterBrokenElements` 校验器
+      + 两层接线（`WhiteboardTool.sanitizeSceneFromDB` + `ExcalidrawBoard.toSafeElements`）
+- [ ] **候选 B（根治）⏸️ 已排期**：`wbElementRaw` **强制留档** —— 删除时若拿不到 raw 就不落回收站、
+      结果报 `missing`，让降级路径**永不发生**
+- [ ] ⚠️ 待 DeepSeek 裁决：A 中 `arrow`/`line` 我**额外补了 `points`**（原文只说「保持现有模板」），
+      若认为应严格保持原样，可回退这两行
+- [ ] ⚠️ 第 6 轮 A1~A4 删除链实测**须在清空坏数据之后**进行（画布已崩则删除链根本跑不到）
+
+### ✅ 第 8 轮实测指引（C 生效后应可直接打开画布）
+
+- [ ] **直接打开白板** —— 画布应正常显示，不再卡「正在加载绘图...」
+- [ ] **看控制台** —— 应出现 `[白板] 🛡️ 已隔离 N 个残缺元素` + 逐个 `id/type/缺字段`
+      （★ 预期会列出 WB.00023/24 对应元素）
+- [ ] **从信息数据库删除 WB.00023/24** —— 走正常 UI 路径，**不需要**临时按钮
+- [ ] 若画布**仍卡住** → 说明还有 C 未覆盖的崩溃源，把 `[白板] 🛡️` 日志 + 新 TypeError 堆栈发给 DeepSeek
+
+
+
+> 前置：`npm run build` 已过（1.43s）。以下 4 项 AI 无法执行（MEMO 硬约定 #6），须用户实测。
+
+- [ ] **实测 A1**：画 1 个 → 从图形列表删除 → 等 2 秒 → 打开回收站 → **应该有 1 条**
+- [ ] **实测 A2**：画 2 个 → 删 1 个（剩 1 个）→ 回收站**应该有 1 条**
+- [ ] **实测 A3（★本轮关键）**：画 2 个 → **删光** → 回收站**应该有 2 条**
+      （这是旧 `allowDelete` 判据唯一漏掉的场景；若此项仍为空 → 说明还有第二处阻塞）
+- [ ] **实测 A4（防回归）**：打开白板**不做任何操作** → 信息数据库条数**不该变**
+      （验证闸门③ 仍拦得住首帧空回抛，没被本轮改动破坏）
+- [ ] **恢复往返**：从回收站恢复 A3 的元素 → 关闭白板重开 → 元素**仍在**（验证 `wbElementRaw` 入档未失效）
+- [ ] 控制台观察：场景 A3 **不应**出现 `[诊断-HT] 闸门③拦截`；
+      应出现 `[elementSync] 白板元素软删除完成：2 个`
 
 ### 🚧 待用户实测（白板时序竞态 + 字体，2026-10-06）
 - [ ] **实测 1（核心）**：回收站「恢复」白板元素 → **关闭白板再重新打开**（或刷新）

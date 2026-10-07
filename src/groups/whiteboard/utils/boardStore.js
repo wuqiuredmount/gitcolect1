@@ -53,11 +53,64 @@ export const getAllBoards = async () => {
 };
 
 // 保存（全量覆盖单块白板记录，单事务）
-export const saveBoard = async (board) => {
-  if (!board || !board.boardId) return;
+//
+// 🛡️【缺陷 2 修复（2026-10-07）】乐观并发控制（opts.baseUpdatedAt）
+//
+// 【要解决的竞争】WhiteboardTool.onBeforeUnmount 会用「画布实时快照」整体覆盖 board.scene。
+//   但它并不知道「库在它取快照之后是否已被别人改过」（例：回收站恢复 → setScene 期间
+//   用户立刻切走工具）→ 旧快照回覆盖新数据 → 元素被回退成 isDeleted=true
+//   → 下次 runSync 又把它写进回收站 → 脏数据再生。
+//
+// 【解法】调用方声明「我这份快照是基于哪个版本改的」（baseUpdatedAt），
+//   本函数在写库前用 existing.updatedAt 做版本校验：
+//     · 库版本 ≠ 基线 → 库已被别人更新 → **拒绝本次写入**，返回 { saved:false, reason:'stale' }
+//     · 库版本 = 基线 → 正常写入
+//
+// 【为什么用 updatedAt 而不是「时间保护窗」】
+//   updatedAt 是**客观的版本向量**（本函数本就 await getBoard() 读到了它），
+//   不依赖任何时间常量 → 慢机器/慢磁盘同样正确。
+//
+// 【调用约定（必须遵守，否则会丢数据）】
+//   · 乐观写（画布快照）→ **传** baseUpdatedAt，允话被拒
+//   · 权威写（回收站恢复 / 清理工具 / 手动保存）→ **不传**（undefined）→ 强制覆盖
+//     ⚠️ 不传 = 旧行为，故本改动**向后兼容**，其余调用方零修改。
+//
+// @param {object} board - 白板记录
+// @param {object} [opts] - { baseUpdatedAt?: number } 仅乐观写传
+// @returns {Promise<{saved:boolean, reason?:string, updatedAt?:number}>}
+//   ⚠️ 返回值新增（旧调用方忽略返回值不受影响）
+export const saveBoard = async (board, opts = {}) => {
+  if (!board || !board.boardId) return { saved: false, reason: 'no-board-id' };
   await ensureToolMigrated(WB_TOOL_ID);
-  const now = Date.now();
   const existing = await getBoard(board.boardId);
+
+  // 🔒 乐观并发控制：仅当调用方显式声明基线时才校验（不传 = 强制写）
+  if (opts.baseUpdatedAt !== undefined && existing) {
+    if (existing.updatedAt !== opts.baseUpdatedAt) {
+      // ⚠️ console.warn（非 debug）：这是「防丢数据」的安全哨兵，必须可见
+      console.warn('[boardStore] 🛡️ 拒绝过期写入：库已被更新，本次快照作废',
+        { baseUpdatedAt: opts.baseUpdatedAt, dbUpdatedAt: existing.updatedAt });
+      return { saved: false, reason: 'stale', dbUpdatedAt: existing.updatedAt };
+    }
+  }
+
+  // ⏱️【修订号必须严格单调递增】（2026-10-07 自查发现）
+  //
+  // 【为什么不能直接用 Date.now()】
+  //   读取（getBoard）与写入（putToToolDB）是**两个独立的 await 事务，中间没有锁**。
+  //   于是存在这个交错：
+  //     A 读 → A 读时间戳
+  //            B 读 → B 读时间戳
+  //                   A 写（ts=100）
+  //                   B 写（ts=100）→ 与 A 撞同一毫秒 → **CAS 静默失效**
+  //   毫秒级分辨率在「恢复 + 立即切走」这类紧凑时序下**不够**：
+  //   两次写入可能落在同一毫秒，导致「基线相同 = 版本相同」的误判。
+  //
+  // 【解法】修订号 = max(Date.now(), 库内修订号 + 1) → **同一毫秒内也严格递增**。
+  //   仍保持「单调递增的大整数」语义，对调用方（比较相等性）完全透明。
+  //   ⚠️ 不引入单独字段（复用 updatedAt）：旧数据没有该字段也不受影响，
+  //     因为比较的是「本次调用方拿到的值」与「库里现值」，两者都来自同一处。
+  const now = Math.max(Date.now(), ((existing && existing.updatedAt) || 0) + 1);
   const record = {
     boardId: board.boardId,
     fileId: board.fileId || 'legacy-file',
@@ -71,6 +124,7 @@ export const saveBoard = async (board) => {
   };
   // 深度净化：剥离任何不可序列化字段（Excalidraw 元素理论上已是纯 JSON）
   await putToToolDB(WB_TOOL_ID, STORE, JSON.parse(JSON.stringify(record)));
+  return { saved: true, updatedAt: record.updatedAt };
 };
 
 // 删除单块白板（仅清场景，元素级数据由调用方决定是否走回收站）
