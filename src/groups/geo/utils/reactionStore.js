@@ -100,6 +100,28 @@ export const bumpReaction = async (toolId, fileId, annotationId, type) => {
   return reactions;
 };
 
+// 💬 评论读写：同样挂在「图形附带数据」容器里（reactionStore 的通用性在此兑现 ——
+//   加评论**没有**新开 key、没有改表结构，只是在同一条记录上加了一个 comments 字段）。
+//   ⚠️ 写入时过滤掉空白评论：把「无文本自动删除」这条规则同时固化在存储层，
+//      避免任何调用方漏过滤导致空评论落库。
+export const getComments = async (toolId, fileId, annotationId) => {
+  const rec = await getGraphicExtra(toolId, fileId, annotationId);
+  return (rec && Array.isArray(rec.comments)) ? rec.comments : [];
+};
+
+export const saveComments = async (toolId, fileId, annotationId, comments) => {
+  const list = Array.isArray(comments)
+    ? comments
+        .filter(c => c && typeof c.text === 'string' && c.text.trim())
+        .map(c => ({
+          id: c.id || `c_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          text: c.text,
+          createdAt: Number(c.createdAt) || Date.now()
+        }))
+    : [];
+  return await mergeGraphicExtra(toolId, fileId, annotationId, { comments: list });
+};
+
 // 删除某图形的附带数据（供图形删除时清理，可选调用）
 export const deleteGraphicExtra = async (toolId, fileId, annotationId) => {
   if (!toolId || !fileId || !annotationId) return;

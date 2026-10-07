@@ -99,6 +99,46 @@
         @dblclick="handleEditorDblClick"
       ></div>
 
+      <!-- 💬 评论栏（可向上展开）
+           布局：header 在下、body 在上（column-reverse 语义），展开时内容向**上**生长，
+                 不挤压下方的点赞行与操作区。
+           ➕ 增加一条评论；➖ 删除最后一条评论。
+           空文本评论在失焦时自动删除（存储层 saveComments 也会再过滤一次）。
+           单条上限 COMMENT_MAX_BYTES = 1500 字节 ≈ 500 个汉字（UTF-8 一个汉字 3 字节）。
+           评论持久化在 reactionStore 的「图形附带数据」容器里（meta 表，与点赞同一条记录）。 -->
+      <div class="doc-comments">
+        <div v-show="commentsExpanded" class="comments-body">
+          <div class="comments-toolbar">
+            <button class="comment-op-btn add" @click="addComment" title="增加一条评论">＋</button>
+            <button
+              class="comment-op-btn del"
+              :disabled="comments.length === 0"
+              @click="removeLastComment"
+              title="删除最后一条评论"
+            >－</button>
+            <span class="comments-hint">单条上限约 500 汉字</span>
+          </div>
+          <div v-if="comments.length === 0" class="comments-empty">暂无评论，点击 ＋ 添加</div>
+          <div v-for="(c, i) in comments" :key="c.id" class="comment-item">
+            <textarea
+              v-model="c.text"
+              class="comment-input"
+              rows="2"
+              :placeholder="`评论 ${i + 1}`"
+              @input="handleCommentInput(c)"
+              @blur="handleCommentBlur(c)"
+            ></textarea>
+            <span class="comment-byte" :class="{ over: commentByteLength(c) >= COMMENT_MAX_BYTES }">
+              {{ commentByteLength(c) }}/{{ COMMENT_MAX_BYTES }}
+            </span>
+          </div>
+        </div>
+        <div class="comments-header" @click="commentsExpanded = !commentsExpanded">
+          <span>💬 评论（{{ comments.length }}）</span>
+          <span class="comments-toggle">{{ commentsExpanded ? '▼' : '▲' }}</span>
+        </div>
+      </div>
+
       <!-- 👍 点赞 / 👎 倒赞
            🚨 限制：**每打开一次富文本编辑器，各限 1 次**（会话级锁 sessionLiked/sessionDisliked）。
               面板关闭即组件卸载 ⇒ 状态归零；重新打开 = 新一轮，各可再点 1 次。
@@ -162,7 +202,7 @@
 import { ref, watch, nextTick, onBeforeUnmount, computed } from 'vue';
 import { saveDocument, getDocument } from '../../../../groups/geo/utils/documentStore.js';
 // 👍 图形附带数据（点赞/倒赞）：与 documents 同源身份编码，挂在 meta 表的通用容器里
-import { getReactions, bumpReaction } from '../../../../groups/geo/utils/reactionStore.js';
+import { getReactions, bumpReaction, getComments, saveComments } from '../../../../groups/geo/utils/reactionStore.js';
 import { MARKER_ICONS } from '../../../../groups/geo/utils/markerIcons.js';
 
 const props = defineProps({
@@ -190,6 +230,75 @@ const dislikeCount = ref(0);
 const sessionLiked = ref(false);
 const sessionDisliked = ref(false);
 const showSaveToast = ref(false);
+
+// 💬 评论：展开态 + 列表
+//   单条上限 = 1500 字节（≈500 个汉字，UTF-8 汉字 3 字节/个）
+const COMMENT_MAX_BYTES = 1500;
+const commentsExpanded = ref(false);
+const comments = ref([]);
+
+// 计算某条评论的 UTF-8 字节长度（用于上限校验与展示）
+const commentByteLength = (c) => {
+  const t = (c && typeof c.text === 'string') ? c.text : '';
+  try { return new TextEncoder().encode(t).length; } catch (e) { return t.length * 3; }
+};
+
+// 读取评论（切换图形时调用）
+const loadComments = async (toolId, fileId, nodeId) => {
+  try {
+    const list = await getComments(toolId, fileId, nodeId);
+    comments.value = Array.isArray(list) ? list.map(c => ({ ...c })) : [];
+  } catch (e) {
+    console.warn('[MarkerDocPanel] 读取评论失败:', e);
+    comments.value = [];
+  }
+};
+
+// 持久化评论（存储层会再过滤空文本）
+const persistComments = async () => {
+  if (!props.node) return;
+  try {
+    await saveComments(props.toolId, props.fileId, props.node.id, comments.value);
+  } catch (e) {
+    console.warn('[MarkerDocPanel] 保存评论失败:', e);
+  }
+};
+
+// ➕ 增加一条评论（立即展开，方便直接输入）
+const addComment = () => {
+  commentsExpanded.value = true;
+  comments.value.push({
+    id: `c_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    text: '',
+    createdAt: Date.now()
+  });
+};
+
+// ➖ 删除最后一条评论
+const removeLastComment = () => {
+  if (comments.value.length === 0) return;
+  comments.value.pop();
+  persistComments();
+};
+
+// 输入时按字节截断，保证不超过上限
+const handleCommentInput = (c) => {
+  if (commentByteLength(c) <= COMMENT_MAX_BYTES) return;
+  let t = c.text;
+  const enc = (s) => { try { return new TextEncoder().encode(s).length; } catch (e) { return s.length * 3; } };
+  // 逐步截断到上限内（对代理对/汉字安全）
+  while (t.length > 0 && enc(t) > COMMENT_MAX_BYTES) t = t.slice(0, -1);
+  c.text = t;
+};
+
+// 失焦：空文本评论自动删除，并持久化
+const handleCommentBlur = (c) => {
+  if (!c || typeof c.text !== 'string' || !c.text.trim()) {
+    const i = comments.value.indexOf(c);
+    if (i !== -1) comments.value.splice(i, 1);
+  }
+  persistComments();
+};
 
 // 图片预览状态
 const previewVisible = ref(false);
@@ -264,6 +373,10 @@ watch(() => props.node, async (newNode, oldNode) => {
       likeCount.value = 0;
       dislikeCount.value = 0;
     }
+
+    // 💬 评论：切图形时重置展开态并读取该图形的评论
+    commentsExpanded.value = false;
+    await loadComments(toolId, props.fileId, nodeId);
   }
 }, { immediate: true });
 
@@ -446,6 +559,26 @@ const handleExportDocx = () => {
 .doc-editor :deep(img) { max-width: 100% !important; height: auto !important; display: block; margin: 8px 0; border-radius: 4px; cursor: zoom-in; box-sizing: border-box; user-select: none; }
 .doc-actions { background: #f8f9fa; border-top: 1px solid #ddd; padding: 10px 15px; display: flex; flex-direction: column; gap: 10px; }
 /* 👍 点赞 / 倒赞区（底部，位于操作按钮上方） */
+/* 💬 评论栏（header 在下、body 在上 → 展开时向上生长） */
+.doc-comments { border-top: 1px solid #eee; }
+.comments-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 4px; font-size: 12px; color: #444; cursor: pointer; user-select: none; }
+.comments-header:hover { color: #1890ff; }
+.comments-toggle { font-size: 10px; color: #999; }
+.comments-body { padding: 8px 0; border-bottom: 1px solid #eee; max-height: 220px; overflow-y: auto; }
+.comments-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.comment-op-btn { width: 26px; height: 24px; line-height: 1; font-size: 15px; border-radius: 4px; border: 1px solid #ddd; background: #f7f7f7; cursor: pointer; transition: 0.15s; }
+.comment-op-btn.add:hover { background: #e6f7ff; border-color: #91d5ff; color: #1890ff; }
+.comment-op-btn.del { color: #cf1322; }
+.comment-op-btn.del:hover:not(:disabled) { background: #fff1f0; border-color: #ff7875; }
+.comment-op-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.comments-hint { font-size: 10px; color: #aaa; margin-left: auto; }
+.comments-empty { font-size: 11px; color: #aaa; text-align: center; padding: 10px 0; }
+.comment-item { display: flex; align-items: flex-start; gap: 6px; margin-bottom: 6px; }
+.comment-input { flex: 1; resize: vertical; min-height: 34px; padding: 5px 8px; font-size: 12px; line-height: 1.5; border: 1px solid #ddd; border-radius: 4px; outline: none; font-family: inherit; box-sizing: border-box; }
+.comment-input:focus { border-color: #1890ff; }
+.comment-byte { font-size: 10px; color: #aaa; white-space: nowrap; padding-top: 4px; }
+.comment-byte.over { color: #cf1322; font-weight: bold; }
+
 .doc-reactions { display: flex; align-items: center; gap: 10px; padding: 8px 0; margin-bottom: 8px; border-top: 1px solid #eee; border-bottom: 1px solid #eee; }
 .reaction-btn { display: inline-flex; align-items: center; gap: 4px; padding: 4px 12px; font-size: 12px; border-radius: 14px; border: 1px solid #ddd; background: #f7f7f7; color: #555; cursor: pointer; transition: 0.15s; }
 .reaction-btn:hover:not(:disabled) { background: #e6f7ff; border-color: #91d5ff; color: #1890ff; }
