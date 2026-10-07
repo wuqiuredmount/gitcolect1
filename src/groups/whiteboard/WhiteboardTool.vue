@@ -169,6 +169,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, defineAsyncComponent } from 'vue';
 
 // 🖊️ Excalidraw 画布宿主也懒加载：真正的 React/Excalidraw 代码在点开白板后才下载
+// ===== [SECTION:AsyncExcalidrawBoard] =====
 const AsyncExcalidrawBoard = defineAsyncComponent(
   () => import('./ExcalidrawBoard.vue')
 );
@@ -189,6 +190,7 @@ import { isValidBounds, isValidCanvas } from './utils/coordinate.js';
 import WhiteboardPanels from './WhiteboardPanels.vue';
 // 🤖【P1-A】AI 批量导入面板：懒加载（与 AsyncExcalidrawBoard 同理，
 //   面板依赖 MapPanel/图表等一堆东西，没必要进首屏）。
+// ===== [SECTION:AiImportPanel] =====
 const AiImportPanel = defineAsyncComponent(
   () => import('../../components/tools/geo/panels/AiImportPanel.vue')
 );
@@ -196,6 +198,7 @@ const AiImportPanel = defineAsyncComponent(
 //   ⚠️ 路径核对：WhiteboardTool.vue 在 src/groups/whiteboard/，
 //      面板在 src/components/tools/geo/panels/ ⇒ 上溯两级到 src/components ✓
 //      （与 AiImportPanel 同为 components 子树，故前缀一致）
+// ===== [SECTION:MarkerDocPanel] =====
 const MarkerDocPanel = defineAsyncComponent(
   () => import('../../components/tools/geo/panels/MarkerDocPanel.vue')
 );
@@ -211,20 +214,25 @@ import { mutateElement, CaptureUpdateAction } from '@excalidraw/excalidraw';
 // ⚠️ 此处**不** import moveToRecycleBin：删除的唯一落库入口是 runSync（elementSync.js:281）。
 //    白板面板侧手动调它会形成第二个删除入口，并因缺 wbElementRaw 导致恢复失效（见 handleWbDeleteElement 注释）。
 
+// ===== [SECTION:props] =====
 const props = defineProps({
   fileId: { type: String, default: 'legacy-file' },
   isLoadingProject: { type: Boolean, default: false }
 });
 
 // ---------- 状态 ----------
+// ===== [SECTION:boardRef] =====
 const boardRef = ref(null);
 const api = ref(null);
 
+// ===== [SECTION:boardId] =====
 const boardId = ref('');
 const boardName = ref(WHITEBOARD_DEFAULTS.boardName);
+// ===== [SECTION:isDefaultBasis] =====
 const isDefaultBasis = ref(true);
 const isGeoPanelOpen = ref(false);
 // 🤖【P1-A】AI 批量导入面板开关（顶栏按钮控制）
+// ===== [SECTION:showAiImportPanel] =====
 const showAiImportPanel = ref(false);
 // 🤖【P1-A】导入后补画布的重入锁。
 //   为什么需要：AiImportPanel 的「一键导入全部」是**逐文件 emit('imported')**，
@@ -233,54 +241,67 @@ const showAiImportPanel = ref(false);
 //   语义：后到的调用直接丢弃 —— 因为「读库 → 只补无 wbElementId 的记录」本身是幂等的，
 //   最后一次调用（await 结束后）读到的库一定是最全的，足以覆盖前面的缺口。
 //   ⚠️ 用「排队重跑」而非「直接丢弃」更稳：置 pending 标记，当前跑完再看是否需要补一轮。
+// ===== [SECTION:wbAiImportBusy] =====
 let wbAiImportBusy = false;
 let wbAiImportPending = false;
 
+// ===== [SECTION:initialScene] =====
 const initialScene = ref([]);
 const initialAppState = ref({});
+// ===== [SECTION:lastSyncAt] =====
 const lastSyncAt = ref(0);
 const syncing = ref(false);
+// ===== [SECTION:geoBusy] =====
 const geoBusy = ref(false);
 const geoMessage = ref('');
 
 // 🚨【防御层 3a】boardReady：board.scene 是否已从库中还原完毕。
 //   false 时模板不挂载 <AsyncExcalidrawBoard>，从根上杜绝「首帧空场景」。
+// ===== [SECTION:boardReady] =====
 const boardReady = ref(false);
 // 🚨【防御层 1】canvasReady：画布元素是否已就绪（可安全做集合差同步）。
 //   🩹 触发条件改造（本轮）：旧实现把它绑在 api-ready 上，但 api-ready 从未触发
 //      → canvasReady 永远 false → 元素从不登记（状态栏恒 0）。
 //   现语义纠正为「数据就绪」：initialScene 已灌入 + nextTick 已过 + idMap 已重建。
 //   api-ready 保留为**备选触发源**，两者互为兜底（先到先赢，幂等）。
+// ===== [SECTION:canvasReady] =====
 const canvasReady = ref(false);
 let pendingElements = null;
 
 // 🚨【闸门③】场景活元素数基线：initialScene 灌入时的「活元素」数量。
 //   用途：若某次 onChange 回抛 alive=0 而基线 > 0，说明是 Excalidraw 尚未消化
 //   initialData 的空回抛，而非用户真删光 → 拦截本轮（不删、不登记）。
+// ===== [SECTION:sceneAliveBaseline] =====
 let sceneAliveBaseline = 0;
 // 🚨【闸门③】分水岭：是否已见过「第一次非空 onChange」。
 //   这是「Excalidraw 已消化完 initialData」的唯一可靠证明。
 //   一旦置 true，闸门③ **永久失效**，后续所有 onChange（含用户真的删光）都不受约束。
 //   用 firstNonEmptyChangeSeen 而非「首次空回抛」判据：后者时间窗模糊，
 //   且会误伤「反复画一笔删一笔」与「真删光」两种正常场景。
+// ===== [SECTION:firstNonEmptyChangeSeen] =====
 let firstNonEmptyChangeSeen = false;
 
 // 🚨 幂等置位：canvasReady 只升不降，两个触发源（onMounted / api-ready）先到先赢。
+// ===== [SECTION:armCanvasReady] =====
 const armCanvasReady = (reason) => {
   if (canvasReady.value) return;
   canvasReady.value = true;
   console.log('[诊断-HT] canvasReady 已由', reason, '打开');
 };
 
+// ===== [SECTION:stats] =====
 const stats = reactive({ total: 0, registered: 0, skipped: 0 });
 const registeredList = ref([]);
 // 📝【P1-B】当前富文本面板绑定的节点（annotation 形状：id / type / title / lat / lng）。
 //   null = 面板不渲染。由 handleSelectionChange 维护（画布点选 / 清空选中）。
+// ===== [SECTION:currentDocNode] =====
 const currentDocNode = ref(null);
 
 // 🧩 块 3：白板 P0 面板包装组件 ref（用于「画布点选 → 信息栏联动」）
+// ===== [SECTION:wbPanelsRef] =====
 const wbPanelsRef = ref(null);
 
+// ===== [SECTION:geoForm] =====
 const geoForm = reactive({
   minLat: 0, maxLat: 0, minLng: 0, maxLng: 0,
   canvasWidth: WHITEBOARD_DEFAULTS.canvasWidth,
@@ -288,10 +309,13 @@ const geoForm = reactive({
 });
 
 // 换算三件套（内存副本，避免每次 onChange 都读库）
+// ===== [SECTION:bounds] =====
 let bounds = null;
 let canvas = null;
+// ===== [SECTION:idMap] =====
 let idMap = new ElementIdMap();
 let syncTimer = null;
+// ===== [SECTION:disposed] =====
 let disposed = false;
 
 // ---------- 🛡️【缺陷 2 修复（2026-10-07）】乐观写入的三件套状态 ----------
@@ -308,14 +332,17 @@ let disposed = false;
 // ① lastKnownUpdatedAt：上一次从库读到 / 写库成功后的 board.updatedAt（版本基线）
 // ② canvasDirty：画布上是否有「尚未落库的用户改动」
 // ③ saving：进程内写互斥，避免乐观写与权威写并发（DeepSeek 第 17 轮 §四已批）
+// ===== [SECTION:lastKnownUpdatedAt] =====
 let lastKnownUpdatedAt = undefined;   // undefined = 未知基线（此时不做校验，退化为旧行为）
 let canvasDirty = false;
+// ===== [SECTION:saving] =====
 let saving = false;
 
 // ⚠️ setScene 回灌期间，Excalidraw 会**回抛一次 onChange**（这是「库→画布」方向，
 //   不是用户改动）。用这个标记把该次回抛排除，否则 canvasDirty 会被误置 true
 //   → t1 场景（恢复后立刻关）就会走权威写 → 脏数据又回灌。
 //   看内容判断不可靠（恢复前后内容可能完全相同），故用「短窗口锁定」。
+// ===== [SECTION:sceneApplyLock] =====
 let sceneApplyLock = 0;
 const SCENE_APPLY_LOCK_MS = 300;      // 只需覆盖 Vue→React→onChange 的帧级延迟
 
@@ -336,6 +363,7 @@ const SCENE_APPLY_LOCK_MS = 300;      // 只需覆盖 Vue→React→onChange 的
  * @param {Array} [sceneOverride] 不传则用当前库里的 scene
  * @returns {Promise<{saved:boolean, reason?:string}>}
  */
+// ===== [SECTION:persistBoardAuthoritative] =====
 const persistBoardAuthoritative = async (sceneOverride = undefined) => {
   if (!boardId.value) return { saved: false, reason: 'no-board-id' };
   const current = await getBoard(boardId.value);
@@ -354,6 +382,7 @@ const persistBoardAuthoritative = async (sceneOverride = undefined) => {
 };
 
 // UIOptions：精简掉本项目用不到的入口（协作、库、导出图片等）
+// ===== [SECTION:uiOptions] =====
 const uiOptions = {
   canvasActions: {
     loadScene: false,
@@ -363,6 +392,7 @@ const uiOptions = {
   }
 };
 
+// ===== [SECTION:lastSyncText] =====
 const lastSyncText = computed(() =>
   lastSyncAt.value ? new Date(lastSyncAt.value).toLocaleTimeString('zh-CN') : ''
 );
@@ -376,6 +406,7 @@ const lastSyncText = computed(() =>
 //   wbElementId                                  → :192 恒写 element.id
 // ⚠️ layerRef 不存在（Excalidraw 元素不是 Leaflet 图层），不注入：
 //   面板的「点击图层」路径在白板侧用不到，定位统一走 @locate 事件 + wbElementId。
+// ===== [SECTION:wbPanelLayers] =====
 const wbPanelLayers = computed(() =>
   registeredList.value.map(item => ({
     ...item,
@@ -391,6 +422,7 @@ const wbPanelLayers = computed(() =>
 // （PresetGroups / 热点等由 LayerListPanel 内部自行补齐，此处只管白板数据）
 // ✅ 直接读库值即可：elementSync 更新分支现已同步 customData.group → annotations.group
 //    （见 elementSync.js 更新分支的「分组同步」注释），无需再垫一层画布侧覆盖值。
+// ===== [SECTION:wbPanelGroups] =====
 const wbPanelGroups = computed(() => {
   const set = new Set(['默认']);
   registeredList.value.forEach(l => {
@@ -403,6 +435,7 @@ const wbPanelGroups = computed(() => {
 // ---------- 元素同步 ----------
 
 // 防抖：Excalidraw 的 onChange 在拖拽时会高频触发，不能每次都写库
+// ===== [SECTION:scheduleSync] =====
 const scheduleSync = (elements) => {
   // 🔍【诊断-HT】入口（已降级 console.debug，默认不刷屏）
   console.debug('[诊断-HT] scheduleSync 被调:', Array.isArray(elements) ? elements.length : '(非数组)',
@@ -424,6 +457,7 @@ const scheduleSync = (elements) => {
   }, 800);
 };
 
+// ===== [SECTION:runSync] =====
 const runSync = async (elements) => {
   const list = Array.isArray(elements) ? elements : [];
   // 只统计「活着的」元素（isDeleted 是 Excalidraw 的软删除标记）
@@ -568,6 +602,7 @@ const runSync = async (elements) => {
   }
 };
 
+// ===== [SECTION:syncNow] =====
 const syncNow = async () => {
   if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
   // 🚨【防御层 4】手动同步同样受画布就绪守卫。
@@ -580,6 +615,7 @@ const syncNow = async () => {
   await runSync(snap ? snap.scene : []);
 };
 
+// ===== [SECTION:refreshRegisteredList] =====
 const refreshRegisteredList = async () => {
   try {
     const list = await getRegisteredElements(safeFileId());
@@ -599,6 +635,7 @@ const refreshRegisteredList = async () => {
   }
 };
 
+// ===== [SECTION:safeFileId] =====
 const safeFileId = () => props.fileId || 'legacy-file';
 
 /**
@@ -622,6 +659,7 @@ const safeFileId = () => props.fileId || 'legacy-file';
  * @param {Array} rawScene - board.scene（可能含残缺元素）
  * @returns {Array} 可安全渲染的元素数组
  */
+// ===== [SECTION:sanitizeSceneFromDB] =====
 const sanitizeSceneFromDB = (rawScene) => {
   const raw = Array.isArray(rawScene) ? rawScene : [];
   if (raw.length === 0) return [];
@@ -641,6 +679,7 @@ const sanitizeSceneFromDB = (rawScene) => {
 
 // ---------- Excalidraw 事件 ----------
 
+// ===== [SECTION:handleApiReady] =====
 const handleApiReady = async (nextApi) => {
   api.value = nextApi;
   // 🩹 canvasReady 的**备选触发源**（主触发源在 onMounted）。
@@ -664,6 +703,7 @@ const handleApiReady = async (nextApi) => {
 //   桥接链已核实：excalidrawBridge.js:51 `onChange: (elements, appState) => emit('change', ...)`
 //                → ExcalidrawBoard.vue:52 `emit('change', elements, appState)`
 //   两处**本就在透传 appState**，故只需在此处接住，桥接层一行未改。
+// ===== [SECTION:handleChange] =====
 const handleChange = (elements, appState) => {
   console.debug('[诊断-HT] handleChange 收到:', Array.isArray(elements) ? elements.length : '(非数组)');
   // 🛡️【缺陷 2 修复（2026-10-07）】标记「画布有未落库改动」。
@@ -700,6 +740,7 @@ const handleChange = (elements, appState) => {
  *   InfoPanel 自身已有「layer 从 layers 中消失才清空」的 watch（:189-193），
  *   退出选中时面板保持上次内容 —— 这是**有意保留**的行为，不是 bug。
  */
+// ===== [SECTION:syncSelectedToInfoPanel] =====
 const syncSelectedToInfoPanel = (appState) => {
   const sel = (appState && appState.selectedElementIds) || {};
   const firstId = Object.keys(sel).find(k => sel[k]);
@@ -736,6 +777,7 @@ const syncSelectedToInfoPanel = (appState) => {
  *   2) 但底部「类型：xxx」信息行会展示它，传 annotation.type 与信息数据库显示一致；
  *   3) 绝不能传画布侧 type（rectangle/text 无 wb- 前缀会破坏红线「白板元素 type 必带 wb-」）。
  */
+// ===== [SECTION:handleSelectionChange] =====
 const handleSelectionChange = (ids) => {
   if (!Array.isArray(ids) || ids.length === 0) {
     currentDocNode.value = null;
@@ -768,6 +810,7 @@ const handleSelectionChange = (ids) => {
 };
 
 /** 面板右上角 ✕ → 关闭（不取消选中，下次点选同一元素仍会因 handleSelectionChange 重开） */
+// ===== [SECTION:handleDocPanelClose] =====
 const handleDocPanelClose = () => {
   currentDocNode.value = null;
 };
@@ -781,6 +824,7 @@ const handleDocPanelClose = () => {
  * 【为什么只改本地副本】让「信息数据库 / 图形列表」在本轮刷新前也显示新名字，
  *   属于纯 UI 补齐；下次 refreshRegisteredList() 会从库读回权威值并覆盖。
  */
+// ===== [SECTION:handleDocTitleUpdate] =====
 const handleDocTitleUpdate = (payload) => {
   if (!payload || !payload.id) return;
   const target = registeredList.value.find(item => item && item.id === payload.id);
@@ -801,6 +845,7 @@ const handleDocTitleUpdate = (payload) => {
  * 【为什么不做 loading/disabled】滚动画布是**同步**调用（animate 只是视觉过渡），
  *   不存在可观测的等待期，加禁用态反而会引入状态抖动。
  */
+// ===== [SECTION:handleBackToCenter] =====
 const handleBackToCenter = () => {
   const api = boardRef.value?.getApi?.();
   // 画布未就绪（懒加载中 / 已卸载）→ 静默返回，不抛错、不弹窗
@@ -824,6 +869,7 @@ const handleBackToCenter = () => {
  *   白板侧元素不是 Leaflet 图层，**不存在 layerRef**（见 wbPanelLayers 注释）。
  *   因此走 ExcalidrawBoard.vue:77-86 现成的 scrollToElement（内部 api.scrollToContent）。
  */
+// ===== [SECTION:whiteboardLocate] =====
 const whiteboardLocate = (item) => {
   const wbElementId = item && item.wbElementId;
   if (!wbElementId || !boardRef.value || typeof boardRef.value.scrollToElement !== 'function') return;
@@ -840,6 +886,7 @@ const whiteboardLocate = (item) => {
  *   白板侧再开一个写库入口会造成双写。若将来要让信息栏改名立刻反映到画布显示名，
  *   应在这里补 customData 镜像（走 mutateElement + updateScene），而不是直接写 annotations。
  */
+// ===== [SECTION:handleWbLayerUpdate] =====
 const handleWbLayerUpdate = (payload) => {
   console.debug('[白板面板] update-layer（v1 不写库，走 runSync 单一入口）:', payload && payload.id);
 };
@@ -850,16 +897,19 @@ const handleWbLayerUpdate = (payload) => {
  *   它操作的是 Leaflet 的 editableLayers 容器；白板画布无对应「图层显隐」概念。
  *   v1 范围已明确排除「分组过滤联动（画布↔面板↔列表）」→ 只记日志。
  */
+// ===== [SECTION:handleWbFilterGroup] =====
 const handleWbFilterGroup = (group) => {
   console.debug('[白板面板] filter-group（v1 不联动画布）:', group);
 };
 
 /** 新增分组：v1 只在 UI 层生效（分组名由 wbPanelGroups 从 annotations 派生，不单独存分组表） */
+// ===== [SECTION:handleWbAddGroup] =====
 const handleWbAddGroup = (name) => {
   console.debug('[白板面板] add-group:', name);
 };
 
 /** 删除分组：v1 同上，no-op（不批量改 annotations.group，避免绕过 syncScene 指纹去重） */
+// ===== [SECTION:handleWbRemoveGroup] =====
 const handleWbRemoveGroup = (name) => {
   console.debug('[白板面板] remove-group:', name);
 };
@@ -897,6 +947,7 @@ const handleWbRemoveGroup = (name) => {
  *   ⚠️ 与 `update-layer-group` 的载荷形态**不同**（后者是 `{ id, group }` 且无 wbElementId），
  *      两者不可互换处理。
  */
+// ===== [SECTION:handleWbDeleteElement] =====
 const handleWbDeleteElement = (item) => {
   const wbElementId = item && item.wbElementId;
   if (!item || !item.id || !wbElementId) return;
@@ -925,6 +976,7 @@ const handleWbDeleteElement = (item) => {
 };
 
 // 🧪【临时调试，2026-10-07】清理幽灵元素：按钮 loading 态
+// ===== [SECTION:ghostCleaning] =====
 const ghostCleaning = ref(false);
 
 /**
@@ -962,6 +1014,7 @@ const ghostCleaning = ref(false);
  *
  * ⚠️ 排查结束后整块删除（含按钮 / 导入 / 样式）。
  */
+// ===== [SECTION:handleCleanGhostElements] =====
 const handleCleanGhostElements = async () => {
   if (ghostCleaning.value) return;
   ghostCleaning.value = true;
@@ -1088,6 +1141,7 @@ const handleCleanGhostElements = async () => {
  *   buildFingerprint 的 payload 不含 group（elementSync.js）→
  *   改分组不会被判为「内容变更」而注销重建指纹，走的是纯 UI 层变更。
  */
+// ===== [SECTION:handleWbUpdateGroup] =====
 const handleWbUpdateGroup = (payload) => {
   // 🚨 载荷形态已核实：LayerListPanel.vue:268 发出的是 `{ id, group }`，
   //   **id = annotation id（WB.00012），载荷里没有 wbElementId**！
@@ -1149,6 +1203,7 @@ const handleWbUpdateGroup = (payload) => {
   console.debug('[白板面板] 已改组:', wbElementId, '→', group);
 };
 
+// ===== [SECTION:locateElement] =====
 const locateElement = async (item) => {
   const elId = item && item.wbElementId;
   if (!elId || !boardRef.value?.scrollToElement) return;
@@ -1162,8 +1217,10 @@ const locateElement = async (item) => {
 // 白板元素点开即「编辑画布上的图形」，与地图语义不同，故此处不整套复用 MarkerDocPanel
 //   的样式面板（其样式项由 node.type 驱动，wb- 前缀会全空），
 //   而是直接复用同一张 documents 表 + 同一套 documentStore API，保证数据层完全一致。
+// ===== [SECTION:docPreview] =====
 const docPreview = ref(null);
 
+// ===== [SECTION:openDoc] =====
 const openDoc = async (item) => {
   if (!item) return;
   try {
@@ -1188,6 +1245,7 @@ const openDoc = async (item) => {
 
 // ---------- 地理范围设置 ----------
 
+// ===== [SECTION:loadGeoForm] =====
 const loadGeoForm = () => {
   if (bounds) {
     geoForm.minLat = bounds.minLat;
@@ -1201,6 +1259,7 @@ const loadGeoForm = () => {
   }
 };
 
+// ===== [SECTION:saveGeoBasis] =====
 const saveGeoBasis = async () => {
   geoBusy.value = true;
   geoMessage.value = '';
@@ -1234,6 +1293,7 @@ const saveGeoBasis = async () => {
   }
 };
 
+// ===== [SECTION:resetGeoBasis] =====
 const resetGeoBasis = async () => {
   geoBusy.value = true;
   geoMessage.value = '';
@@ -1385,6 +1445,7 @@ onBeforeUnmount(async () => {
 });
 
 // 供 GisApp（信息数据库 / 回收站恢复）调用：重新从库读元素
+// ===== [SECTION:refreshDataFromDB] =====
 const refreshDataFromDB = async () => {
   try {
     idMap = await rebuildIdMap(safeFileId());
@@ -1453,6 +1514,7 @@ const refreshDataFromDB = async () => {
 //   这里是**追加**元素（画布内容会整体变化），且需要 initialScene 同步更新，
 //   避免后续 watch(initialScene) 或回灌时把 AI 元素覆盖掉。
 //   ⚠️ setScene 会触发一次 onChange 回抛 → 交给既有闸门③/防抖处理，无需特殊干预。
+// ===== [SECTION:handleWbAiImported] =====
 const handleWbAiImported = async () => {
   // 🔒 重入保护：并发进入时只登记「还需再跑一轮」，由正在跑的那次收尾时补跑。
   if (wbAiImportBusy) { wbAiImportPending = true; return; }
@@ -1524,12 +1586,14 @@ const handleWbAiImported = async () => {
 // 🚨 T1 补丁：把刷新入口暴露到 window，供 RecycleBinModal 跨组件调用
 //   理由：回收站弹窗由 GisApp 顶层渲染，拿不到白板实例引用（KeepAlive + 动态组件），
 //        用轻量钩子比改造 GisApp 的 ref 传递链更安全（不触碰既有地图逻辑）。
+// ===== [SECTION:registerRefreshHook] =====
 const registerRefreshHook = () => {
   try {
     window.__wbRefreshHook = refreshDataFromDB;
   } catch (e) { /* 忽略 */ }
 };
 
+// ===== [SECTION:unregisterRefreshHook] =====
 const unregisterRefreshHook = () => {
   try {
     if (window.__wbRefreshHook === refreshDataFromDB) window.__wbRefreshHook = null;

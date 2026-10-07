@@ -314,11 +314,13 @@ import EagleEyeMapTool from '../components/tools/geo/EagleEyeMapTool.vue';
 
 // 🖊️ 第三产品（Excalidraw 白板）：懒加载，不进 groups 静态数组，
 //    保证首屏不加载 React / Excalidraw（白板体积大且自带 React 运行时）。
+// ===== [SECTION:WhiteboardTool] =====
 const WhiteboardTool = defineAsyncComponent(() =>
   import('../groups/whiteboard/WhiteboardTool.vue')
 );
 
 // 🖊️ 白板「虚拟分组」：只用于顶栏标题与下拉展示，不放进 groups 数组
+// ===== [SECTION:WHITEBOARD_GROUP_ID] =====
 const WHITEBOARD_GROUP_ID = 'whiteboard';
 const WHITEBOARD_TOOL = markRaw({
   id: 'wb-whiteboard',
@@ -345,29 +347,41 @@ import { seedAllToolMeta } from '../groups/geo/utils/toolDBInit';
 import { getNextSequence } from '../groups/geo/utils/systemStore';
 import { formatFileId } from '../groups/geo/utils/toolRegistry';
 
+// ===== [SECTION:route] =====
 const route = useRoute();
 
+// ===== [SECTION:currentTool] =====
 const currentTool = shallowRef(null);
 const currentGroupId = ref('geo');
+// ===== [SECTION:currentFileId] =====
 const currentFileId = ref(''); // 🚨 核心：当前打开的文件编号
 const isAboutOpen = ref(false);
+// ===== [SECTION:isSettingsOpen] =====
 const isSettingsOpen = ref(false);
 const isInventoryOpen = ref(false);
+// ===== [SECTION:isRecycleOpen] =====
 const isRecycleOpen = ref(false);
 const isDatabaseOpen = ref(false);
+// ===== [SECTION:isPendingOpen] =====
 const isPendingOpen = ref(false);
 const currentFlatLayers = ref([]);
 
+// ===== [SECTION:isToolDropdownOpen] =====
 const isToolDropdownOpen = ref(false);
 const isLoadingProject = ref(false);
+// ===== [SECTION:isNewFileModalOpen] =====
 const isNewFileModalOpen = ref(false); // 🚨 新增：新建文件弹窗开关
 
+// ===== [SECTION:toolContentRef] =====
 const toolContentRef = ref(null);
 const projectInputRef = ref(null);
+// ===== [SECTION:projectList] =====
 const projectList = ref([]);
 
+// ===== [SECTION:settings] =====
 const settings = reactive({ saveDirHandle: null, loadDirHandle: null, saveDirName: '', loadDirName: '' });
 
+// ===== [SECTION:typeMap] =====
 const typeMap = {
   polygon: '多边形',
   rectangle: '矩形',
@@ -377,16 +391,19 @@ const typeMap = {
   marker: '标记点'
 };
 
+// ===== [SECTION:getIconPreview] =====
 const getIconPreview = (svgStr) => {
   return svgStr.replace(/#COLOR#/g, '#1890ff');
 };
 
+// ===== [SECTION:initSettings] =====
 const initSettings = () => {
   settings.saveDirName = localStorage.getItem('app_save_dir_name') || '';
   settings.loadDirName = localStorage.getItem('app_load_dir_name') || '';
 };
 initSettings();
 
+// ===== [SECTION:selectDirectory] =====
 const selectDirectory = async (type) => {
   if (!window.showDirectoryPicker) {
     alert('您的浏览器不支持自动保存文件夹功能。建议使用最新版 Chrome 或 Edge 浏览器，或者将软件打包成 Electron 桌面版。');
@@ -409,6 +426,7 @@ const selectDirectory = async (type) => {
   }
 };
 
+// ===== [SECTION:groups] =====
 const groups = ref([
   {
     id: 'geo',
@@ -430,6 +448,7 @@ const groups = ref([
   }
 ]);
 
+// ===== [SECTION:currentGroup] =====
 const currentGroup = computed(() => {
   // 🖊️ 白板走「虚拟分组」，不进 groups 数组
   if (currentGroupId.value === WHITEBOARD_GROUP_ID) {
@@ -439,6 +458,7 @@ const currentGroup = computed(() => {
 });
 
 // 🖊️ 统一工具查找：先查 groups 静态数组，再兜底白板虚拟工具
+// ===== [SECTION:findToolById] =====
 const findToolById = (toolId) => {
   if (toolId === WHITEBOARD_TOOL.id) return WHITEBOARD_TOOL;
   let found = null;
@@ -451,6 +471,7 @@ const findToolById = (toolId) => {
 };
 
 // 🖊️ 全部工具（含白板），供信息数据库 / 小工具开关使用
+// ===== [SECTION:allToolsWithWhiteboard] =====
 const allToolsWithWhiteboard = computed(() => [...validTools.value, WHITEBOARD_TOOL]);
 
 groups.value.forEach(group => {
@@ -513,6 +534,7 @@ onUnmounted(() => {
   document.removeEventListener('click', closeToolDropdown);
 });
 
+// ===== [SECTION:validTools] =====
 const validTools = computed(() => {
   const tools = [];
   groups.value.forEach(group => {
@@ -523,10 +545,12 @@ const validTools = computed(() => {
   return tools;
 });
 
+// ===== [SECTION:closeToolDropdown] =====
 const closeToolDropdown = () => {
   isToolDropdownOpen.value = false;
 };
 
+// ===== [SECTION:openTool] =====
 const openTool = (tool) => {
   if (tool.component) {
     currentTool.value = tool;
@@ -535,6 +559,7 @@ const openTool = (tool) => {
 };
 
 // 🚨 核心：生成新的文件编号，打开空白工具
+// ===== [SECTION:createNewFileWithTool] =====
 const createNewFileWithTool = async (tool) => {
   isNewFileModalOpen.value = false;
   if (tool.component) {
@@ -545,11 +570,13 @@ const createNewFileWithTool = async (tool) => {
 };
 
 // 🚨 核心：关闭工具时回到选择界面
+// ===== [SECTION:closeCurrentTool] =====
 const closeCurrentTool = () => {
   currentTool.value = null;
   currentFileId.value = '';
 };
 
+// ===== [SECTION:handleInventorySwitchTool] =====
 const handleInventorySwitchTool = (toolId) => {
   // 🖊️ 统一查找，白板也能被库存/数据库切换命中
   const targetTool = findToolById(toolId);
@@ -558,6 +585,7 @@ const handleInventorySwitchTool = (toolId) => {
   }
 };
 
+// ===== [SECTION:getActiveMapTool] =====
 const getActiveMapTool = () => {
   if (toolContentRef.value && toolContentRef.value.getProjectData) {
     return toolContentRef.value;
@@ -565,6 +593,7 @@ const getActiveMapTool = () => {
   return null;
 };
 
+// ===== [SECTION:loadProjectList] =====
 const loadProjectList = async () => {
   const allProjects = await getAllProjects(); 
   projectList.value = allProjects
@@ -578,6 +607,7 @@ watch(isInventoryOpen, (val) => {
 });
 
 // 🖊️ 同时统计白板元素（getAllLayers 按 id 聚合，白板元素 toolId 固定为 wb-whiteboard）
+// ===== [SECTION:loadAllLayersFromDB] =====
 const loadAllLayersFromDB = async () => {
   const all = [];
   for (const tool of allToolsWithWhiteboard.value) {
@@ -597,6 +627,7 @@ watch(isDatabaseOpen, (val) => {
   if (val) loadAllLayersFromDB();
 });
 
+// ===== [SECTION:handleDatabaseUpdate] =====
 const handleDatabaseUpdate = async (updatedLayer) => {
   try {
     const toolId = updatedLayer.toolId;
@@ -620,6 +651,7 @@ const handleDatabaseUpdate = async (updatedLayer) => {
   }
 };
 
+// ===== [SECTION:handleDatabaseDelete] =====
 const handleDatabaseDelete = async (item) => {
   try {
     const toolId = item.toolId;
@@ -650,6 +682,7 @@ const handleDatabaseDelete = async (item) => {
   }
 };
 
+// ===== [SECTION:handleSaveCurrentProject] =====
 const handleSaveCurrentProject = async () => {
   if (!currentTool.value) {
     alert('请先打开一个具体的工具后再保存！');
@@ -695,6 +728,7 @@ const handleSaveCurrentProject = async () => {
   }
 };
 
+// ===== [SECTION:openLocalFolder] =====
 const openLocalFolder = (proj) => {
   if (window.electron && window.electron.openPath) {
     window.electron.openPath(proj.localPath);
@@ -703,8 +737,10 @@ const openLocalFolder = (proj) => {
   }
 };
 
+// ===== [SECTION:triggerProjectImport] =====
 const triggerProjectImport = () => projectInputRef.value.click();
 
+// ===== [SECTION:handleProjectImport] =====
 const handleProjectImport = (event) => {
   const file = event.target.files[0];
   if (!file) return;
@@ -730,6 +766,7 @@ const handleProjectImport = (event) => {
   event.target.value = '';
 };
 
+// ===== [SECTION:openProject] =====
 const openProject = async (proj) => {
   // 🖊️ 白板为独立功能区，无「工程文件」概念，走统一查找也不会命中 groups 里的工具
   const targetTool = findToolById(proj.toolId);
@@ -796,10 +833,12 @@ const openProject = async (proj) => {
   }
 };
 
+// ===== [SECTION:exportProject] =====
 const exportProject = (proj) => {
   downloadProjectFile(proj, proj.name);
 };
 
+// ===== [SECTION:deleteProject] =====
 const deleteProject = async (id) => {
   if (confirm('确定删除该工程吗？')) {
     await deleteProjectFromInventory(id);
@@ -807,6 +846,7 @@ const deleteProject = async (id) => {
   }
 };
 
+// ===== [SECTION:exportExcelOnly] =====
 const exportExcelOnly = (proj) => {
   if (!proj.layers || proj.layers.length === 0) {
     alert('该工程没有图形数据！');
@@ -815,6 +855,7 @@ const exportExcelOnly = (proj) => {
   exportToExcel(proj.layers);
 };
 
+// ===== [SECTION:exportWordOnly] =====
 const exportWordOnly = (proj) => {
   if (!proj.layers || proj.layers.length === 0) {
     alert('该工程没有图形数据！');

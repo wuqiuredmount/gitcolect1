@@ -148,6 +148,7 @@ import { runChunked, sampleRandom, GROUP_DISPLAY_MAX, ROTATE_INTERVAL_MS, CHUNK_
 
 L.drawLocal = zhCN_DrawLocal;
 
+// ===== [SECTION:props] =====
 const props = defineProps({
   config: {
     type: Object,
@@ -163,6 +164,7 @@ const props = defineProps({
   fileId: { type: String, default: 'legacy-file' } // 🚨 新增：接收当前文件编号
 });
 
+// ===== [SECTION:finalVisibleTools] =====
 const finalVisibleTools = computed(() => {
   return getMergedToolConfig(props.config.toolId, props.config.visibleTools);
 });
@@ -170,78 +172,104 @@ const finalVisibleTools = computed(() => {
 // 🤖 AI 批量导入面板显示判定：
 // 工具自身 config.visibleTools 里显式指定时优先（如鹰眼设为 true）；
 // 否则回退到合并后的全局设置（默认 false）。
+// ===== [SECTION:showAiImportPanel] =====
 const showAiImportPanel = computed(() => {
   const raw = props.config.visibleTools?.aiImportPanel;
   if (raw !== undefined) return raw;
   return finalVisibleTools.value.aiImportPanel === true;
 });
 
+// ===== [SECTION:mapContainer] =====
 const mapContainer = ref(null);
 const baseInputRef = ref(null);
+// ===== [SECTION:bothInputRef] =====
 const bothInputRef = ref(null);
 const infoPanelRef = ref(null);
 
+// ===== [SECTION:contextMenuVisible] =====
 const contextMenuVisible = ref(false);
 const contextMenuX = ref(0);
+// ===== [SECTION:contextMenuY] =====
 const contextMenuY = ref(0);
 const contextMenuLayerData = ref(null);
 
+// ===== [SECTION:map] =====
 let map = null;
 let editableLayers = null;
+// ===== [SECTION:baseLayer] =====
 let baseLayer = null;
 let annoLayer = null;
+// ===== [SECTION:currentDrawHandler] =====
 let currentDrawHandler = null;
 let tempRectangle = null;
+// ===== [SECTION:tempCircle] =====
 let tempCircle = null;
 let tempEllipse = null;
+// ===== [SECTION:rectStartLatLng] =====
 let rectStartLatLng = null;
 let circleStartLatLng = null;
+// ===== [SECTION:ellipseStartLatLng] =====
 let ellipseStartLatLng = null;
 let resizeObserver = null;
 
+// ===== [SECTION:currentBaseImageData] =====
 let currentBaseImageData = null;
 let currentBaseImageWidth = 0;
+// ===== [SECTION:currentBaseImageHeight] =====
 let currentBaseImageHeight = 0;
 
+// ===== [SECTION:defaultCenter] =====
 let defaultCenter = [39.0123, 117.3456];
 let defaultZoom = 15;
 // 🚨 数据加载完成标志：未完成前禁止自动保存，避免空数组覆盖 IndexedDB 历史数据
+// ===== [SECTION:hasLoadedOnce] =====
 let hasLoadedOnce = false;
 const zoomLevelPercent = ref(100);
 
+// ===== [SECTION:selectedNode] =====
 const selectedNode = ref(null);
 const baseOpacity = ref(1);
+// ===== [SECTION:annoOpacity] =====
 const annoOpacity = ref(1);
 const activeTool = ref(null);
+// ===== [SECTION:drawnLayers] =====
 const drawnLayers = ref([]);
 const groups = ref([{ id: 1, name: '默认' }]);
+// ===== [SECTION:isCustomImageLoaded] =====
 const isCustomImageLoaded = ref(false);
 
 // ==================== 热点信息（与收藏夹同为「叠加型」虚拟分组） ====================
 // 目的：鹰眼平台数据量大时（数百条），全量渲染会造成卡顿。
 // 策略：打开时只渲染「热点信息」中的图形（每个分组随机 2-3 个，总数不超过 49）。
 // 数据仍完整保留在 drawnLayers 与 IndexedDB 中，仅控制地图渲染数量。
+// ===== [SECTION:HOTSPOT_KEY] =====
 const HOTSPOT_KEY = 'geo_hotspot_layer_ids';
 const HOTSPOT_GROUP = '热点信息';
+// ===== [SECTION:HOTSPOT_MAX] =====
 const HOTSPOT_MAX = 49;
 const hotspotIds = ref([]);
 
 // ==================== 显示窗口 + 轮换（防卡顿核心） ====================
 // 任何视图最多只把 GROUP_DISPLAY_MAX 个图形挂到地图上，每 30 秒随机轮换。
 // 数据仍完整保留在 drawnLayers，仅控制「实际挂载到 Leaflet」的数量。
+// ===== [SECTION:displayIds] =====
 const displayIds = ref([]);
 const currentView = ref('全部');
+// ===== [SECTION:loadProgress] =====
 const loadProgress = ref({ done: 0, total: 0, loading: false });
 let rotateTimer = null;
 
 // 图标缓存：同一套样式只创建一次 divIcon，避免万级标记重复解析 SVG
+// ===== [SECTION:markerIconCache] =====
 const markerIconCache = new Map();
 
 // 🚨 跟踪 KeepAlive 激活状态，控制 Teleport 内容是否挂载
+// ===== [SECTION:isActive] =====
 const isActive = ref(true);
 const AMAP_KEY = '69d86725ca981d56159af949ce2a68ec';
 
 // 🚨 坐标提取工具函数（供多处复用）
+// ===== [SECTION:extractCoordsFromLayer] =====
 const extractCoordsFromLayer = (item) => {
   let coords = [];
   const layer = item.layerRef;
@@ -274,6 +302,7 @@ const extractCoordsFromLayer = (item) => {
 };
 
 // 🚨 保存前提取坐标 + NaN 校验 + coords 回退
+// ===== [SECTION:forceAutoSave] =====
 const forceAutoSave = async () => {
   if (!props.config.toolId) return;
   // 🚨 核心防护：数据尚未从 IndexedDB 加载完成时禁止保存，避免空数组覆盖历史数据
@@ -315,6 +344,7 @@ const forceAutoSave = async () => {
   }
 };
 
+// ===== [SECTION:getMarkerIcon] =====
 const getMarkerIcon = (style) => {
   const color = style.color || '#1890ff';
   const size = style.iconSize || 32;
@@ -340,6 +370,7 @@ const getMarkerIcon = (style) => {
 };
 
 // 🚨 创建单个 Leaflet 图层实例（不挂载，交给显示窗口决定）
+// ===== [SECTION:createLayerInstance] =====
 const createLayerInstance = (item) => {
   try {
     if (item.type === 'polygon' || item.type === 'circle' || item.type === 'ellipse') return L.polygon(item.coords, item.style);
@@ -355,6 +386,7 @@ const createLayerInstance = (item) => {
   return null;
 };
 
+// ===== [SECTION:generateCirclePoints] =====
 const generateCirclePoints = (center, radiusInMeters, numPoints = 64) => {
   const points = [];
   const latRadius = radiusInMeters / 111320;
@@ -369,6 +401,7 @@ const generateCirclePoints = (center, radiusInMeters, numPoints = 64) => {
   return points;
 };
 
+// ===== [SECTION:generateEllipsePoints] =====
 const generateEllipsePoints = (center, latRadius, lngRadius, numPoints = 64) => {
   const points = [];
   for (let i = 0; i < numPoints; i++) {
@@ -381,17 +414,20 @@ const generateEllipsePoints = (center, latRadius, lngRadius, numPoints = 64) => 
   return points;
 };
 
+// ===== [SECTION:handleZoomPercentChange] =====
 const handleZoomPercentChange = () => {
   if (!map) return;
   const zoom = Math.log2(zoomLevelPercent.value / 100);
   map.setZoom(zoom);
 };
 
+// ===== [SECTION:resetToCenter] =====
 const resetToCenter = () => {
   if (!map) return;
   map.flyTo(defaultCenter, defaultZoom, { duration: 1.5 });
 };
 
+// ===== [SECTION:handleMoveEnd] =====
 const handleMoveEnd = () => {
   if (map) {
     const state = {
@@ -402,12 +438,14 @@ const handleMoveEnd = () => {
   }
 };
 
+// ===== [SECTION:handleZoomEnd] =====
 const handleZoomEnd = () => {
   if (!map) return;
   const zoom = map.getZoom();
   zoomLevelPercent.value = Math.round(100 * Math.pow(2, zoom));
 };
 
+// ===== [SECTION:initMap] =====
 const initMap = () => {
   if (!mapContainer.value) return;
   if (map) { map.remove(); }
@@ -478,6 +516,7 @@ onDeactivated(() => {
 });
 
 // KeepAlive 被重新激活时：标记活跃 + 刷新数据
+// ===== [SECTION:mountCount] =====
 let mountCount = 0;
 onActivated(async () => {
   isActive.value = true;
@@ -499,12 +538,14 @@ onUnmounted(() => {
   document.removeEventListener('fullscreenchange', handleResize);
 });
 
+// ===== [SECTION:handleResize] =====
 const handleResize = () => { setTimeout(() => { if (map) map.invalidateSize(); }, 100); };
 const toggleFullscreen = () => {
   if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(err => console.warn(err));
   else document.exitFullscreen();
 };
 
+// ===== [SECTION:hideContextMenu] =====
 const hideContextMenu = () => {
   contextMenuVisible.value = false;
   contextMenuLayerData.value = null;
@@ -512,6 +553,7 @@ const hideContextMenu = () => {
 
 // 🚨 软删除图层（供图形列表的「编辑分组」窗口调用）
 //    与右键菜单删除不同：此路径把图形 + 富文本一起移入回收站，可恢复
+// ===== [SECTION:handleSoftDeleteLayer] =====
 const handleSoftDeleteLayer = async (layer) => {
   if (!layer || !layer.id) return;
   const toolId = props.config.toolId;
@@ -550,6 +592,7 @@ const handleSoftDeleteLayer = async (layer) => {
   }
 };
 
+// ===== [SECTION:handleDeleteLayer] =====
 const handleDeleteLayer = () => {
   if (!contextMenuLayerData.value || !editableLayers) return;
   
@@ -571,6 +614,7 @@ const handleDeleteLayer = () => {
 };
 
 // 加载时过滤无效坐标
+// ===== [SECTION:loadHistoricalLayers] =====
 const loadHistoricalLayers = async () => {
   // 🔬 诊断探针（2026-10-06，临时，定位「图形列表 4277 vs 数据库 462」bug）
   //    看调用次数与调用时的既有长度，判断 concat 是否在累加重复
@@ -653,6 +697,7 @@ const loadHistoricalLayers = async () => {
   }
 };
 
+// ===== [SECTION:bindMapEvents] =====
 const bindMapEvents = () => {
   map.on('click', hideContextMenu);
 
@@ -699,6 +744,7 @@ const bindMapEvents = () => {
 };
 
 // 🚨 Phase 2b：创建时使用带前缀的新编号 CM.00001
+// ===== [SECTION:addLayerToMap] =====
 const addLayerToMap = async (layer, type, latlng) => {
   // 从当前工具库获取下一个序号
   const seq = await getNextSequence(props.config.toolId, 'graphic');
@@ -763,6 +809,7 @@ const addLayerToMap = async (layer, type, latlng) => {
   forceAutoSave();
 };
 
+// ===== [SECTION:handleLayerUpdate] =====
 const handleLayerUpdate = (updatedLayer) => {
   const index = drawnLayers.value.findIndex(l => l.id === updatedLayer.id);
   if (index !== -1) {
@@ -781,6 +828,7 @@ const handleLayerUpdate = (updatedLayer) => {
   }
 };
 
+// ===== [SECTION:handleUpdateLayerGroup] =====
 const handleUpdateLayerGroup = ({ id, group }) => {
   const index = drawnLayers.value.findIndex(l => l.id === id);
   if (index !== -1) {
@@ -791,6 +839,7 @@ const handleUpdateLayerGroup = ({ id, group }) => {
 
 // ==================== 热点信息：生成与应用 ====================
 
+// ===== [SECTION:loadHotspotIds] =====
 const loadHotspotIds = () => {
   try {
     const raw = JSON.parse(localStorage.getItem(HOTSPOT_KEY) || '[]');
@@ -800,12 +849,14 @@ const loadHotspotIds = () => {
   }
 };
 
+// ===== [SECTION:saveHotspotIds] =====
 const saveHotspotIds = (ids) => {
   hotspotIds.value = Array.isArray(ids) ? ids : [];
   try { localStorage.setItem(HOTSPOT_KEY, JSON.stringify(hotspotIds.value)); } catch (e) { /* 忽略配额错误 */ }
 };
 
 // 生成热点：遍历每个分组，随机抽取 2-3 个，累计不超过 HOTSPOT_MAX
+// ===== [SECTION:buildHotspotIds] =====
 const buildHotspotIds = () => {
   const byGroup = {};
   drawnLayers.value.forEach(item => {
@@ -835,6 +886,7 @@ const buildHotspotIds = () => {
 // ==================== 显示窗口：上限 60 + 30 秒轮换 ====================
 
 // 计算某视图的显示集合（随机采样，上限 GROUP_DISPLAY_MAX）
+// ===== [SECTION:computeDisplaySet] =====
 const computeDisplaySet = (view) => {
   let pool;
   if (view === HOTSPOT_GROUP) {
@@ -849,6 +901,7 @@ const computeDisplaySet = (view) => {
 
 // 应用显示集合：始终通过 editableLayers 容器增删
 // 注意：绝不能直接 map.addLayer/removeLayer，否则图层脱离容器会导致投影错乱、图形跑位
+// ===== [SECTION:applyDisplaySet] =====
 const applyDisplaySet = (ids) => {
   if (!editableLayers) return;
   const idSet = new Set(ids);
@@ -864,6 +917,7 @@ const applyDisplaySet = (ids) => {
 };
 
 // 轮换计时器：每 30 秒重新随机采样
+// ===== [SECTION:restartRotation] =====
 const restartRotation = (view) => {
   if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }
   // 热点视图由「刷新热点」手动控制，不自动轮换
@@ -875,6 +929,7 @@ const restartRotation = (view) => {
 };
 
 // 切换视图并应用显示窗口
+// ===== [SECTION:applyDisplayForView] =====
 const applyDisplayForView = (view) => {
   currentView.value = view;
   const ids = computeDisplaySet(view);
@@ -884,18 +939,21 @@ const applyDisplayForView = (view) => {
 };
 
 // 手动刷新热点（供图形列表的「刷新热点」按钮调用）
+// ===== [SECTION:handleRefreshHotspot] =====
 const handleRefreshHotspot = () => {
   saveHotspotIds(buildHotspotIds());
   applyDisplayForView(HOTSPOT_GROUP);
 };
 
 // 🚨 分组切换入口：改为走显示窗口（上限 60 + 轮换）
+// ===== [SECTION:handleFilterGroup] =====
 const handleFilterGroup = (groupName) => {
   if (!editableLayers) return;
   applyDisplayForView(groupName || '全部');
 };
 
 // 🚨 Phase 2b：新分组编号格式 CM-G.00001
+// ===== [SECTION:handleAddGroup] =====
 const handleAddGroup = async (groupName) => {
   if (groupName && !groups.value.find(g => g.name === groupName)) {
     const seq = await getNextSequence(props.config.toolId, 'group');
@@ -904,6 +962,7 @@ const handleAddGroup = async (groupName) => {
   }
 };
 
+// ===== [SECTION:handleRemoveGroup] =====
 const handleRemoveGroup = (groupName) => {
   groups.value = groups.value.filter(g => g.name !== groupName);
   let hasChange = false;
@@ -918,6 +977,7 @@ const handleRemoveGroup = (groupName) => {
   }
 };
 
+// ===== [SECTION:handleTitleUpdate] =====
 const handleTitleUpdate = (payload) => {
   const id = typeof payload === 'object' ? payload.id : (selectedNode.value ? selectedNode.value.id : null);
   const title = typeof payload === 'object' ? payload.title : payload;
@@ -936,6 +996,7 @@ const handleTitleUpdate = (payload) => {
   handleLayerUpdate({ id: id, title: title, objectName: title });
 };
 
+// ===== [SECTION:handleDocContentUpdate] =====
 const handleDocContentUpdate = (payload) => {
   const id = typeof payload === 'object' ? payload.id : (selectedNode.value ? selectedNode.value.id : null);
   const docHtml = typeof payload === 'object' ? payload.docHtml : payload;
@@ -953,6 +1014,7 @@ const handleDocContentUpdate = (payload) => {
 };
 
 // 点击列表时校验坐标
+// ===== [SECTION:flyToLayer] =====
 const flyToLayer = (item) => {
   if (!item || !map) return;
   const lat = Number(item.lat);
@@ -973,6 +1035,7 @@ const flyToLayer = (item) => {
   }
 };
 
+// ===== [SECTION:clearAllLayers] =====
 const clearAllLayers = (silent = false) => {
   if (props.config.toolId === 'geo-eagle-eye' && silent) {
     console.warn('已阻止对鹰眼公共平台数据的静默覆盖/清理！');
@@ -998,6 +1061,7 @@ const clearAllLayers = (silent = false) => {
   }
 };
 
+// ===== [SECTION:startDrawing] =====
 const startDrawing = (type) => {
   if (currentDrawHandler && currentDrawHandler._enabled) currentDrawHandler.disable();
   if (tempRectangle) { map.removeLayer(tempRectangle); tempRectangle = null; }
@@ -1035,6 +1099,7 @@ const startDrawing = (type) => {
   if (currentDrawHandler) currentDrawHandler.enable();
 };
 
+// ===== [SECTION:handleRectangleClick] =====
 const handleRectangleClick = (e) => {
   if (!rectStartLatLng) {
     rectStartLatLng = e.latlng;
@@ -1046,10 +1111,12 @@ const handleRectangleClick = (e) => {
   }
 };
 
+// ===== [SECTION:handleRectangleMouseMove] =====
 const handleRectangleMouseMove = (e) => {
   if (rectStartLatLng && tempRectangle) tempRectangle.setBounds(new L.LatLngBounds(rectStartLatLng, e.latlng));
 };
 
+// ===== [SECTION:finishCustomRectangle] =====
 const finishCustomRectangle = () => {
   map.off('click', handleRectangleClick);
   map.off('mousemove', handleRectangleMouseMove);
@@ -1057,6 +1124,7 @@ const finishCustomRectangle = () => {
   map.off('contextmenu', finishDrawing);
 };
 
+// ===== [SECTION:handleCircleClick] =====
 const handleCircleClick = (e) => {
   if (!circleStartLatLng) {
     circleStartLatLng = e.latlng;
@@ -1068,6 +1136,7 @@ const handleCircleClick = (e) => {
   }
 };
 
+// ===== [SECTION:handleCircleMouseMove] =====
 const handleCircleMouseMove = (e) => {
   if (circleStartLatLng && tempCircle) {
     const radius = circleStartLatLng.distanceTo(e.latlng);
@@ -1076,6 +1145,7 @@ const handleCircleMouseMove = (e) => {
   }
 };
 
+// ===== [SECTION:finishCustomCircle] =====
 const finishCustomCircle = () => {
   map.off('click', handleCircleClick);
   map.off('mousemove', handleCircleMouseMove);
@@ -1083,6 +1153,7 @@ const finishCustomCircle = () => {
   map.off('contextmenu', finishDrawing);
 };
 
+// ===== [SECTION:handleEllipseClick] =====
 const handleEllipseClick = (e) => {
   if (!ellipseStartLatLng) {
     ellipseStartLatLng = e.latlng;
@@ -1094,6 +1165,7 @@ const handleEllipseClick = (e) => {
   }
 };
 
+// ===== [SECTION:handleEllipseMouseMove] =====
 const handleEllipseMouseMove = (e) => {
   if (ellipseStartLatLng && tempEllipse) {
     const latRadius = Math.abs(e.latlng.lat - ellipseStartLatLng.lat);
@@ -1103,6 +1175,7 @@ const handleEllipseMouseMove = (e) => {
   }
 };
 
+// ===== [SECTION:finishCustomEllipse] =====
 const finishCustomEllipse = () => {
   map.off('click', handleEllipseClick);
   map.off('mousemove', handleEllipseMouseMove);
@@ -1110,6 +1183,7 @@ const finishCustomEllipse = () => {
   map.off('contextmenu', finishDrawing);
 };
 
+// ===== [SECTION:finishDrawing] =====
 const finishDrawing = () => {
   if (activeTool.value === 'rectangle') {
     if (tempRectangle) addLayerToMap(tempRectangle, 'rectangle', tempRectangle.getBounds().getCenter());
@@ -1131,6 +1205,7 @@ const finishDrawing = () => {
   activeTool.value = null;
 };
 
+// ===== [SECTION:toggleEditMode] =====
 const toggleEditMode = () => {
   if (activeTool.value === 'edit') {
     activeTool.value = null;
@@ -1145,6 +1220,7 @@ const toggleEditMode = () => {
   }
 };
 
+// ===== [SECTION:updateNodeStyle] =====
 const updateNodeStyle = (newStyle) => {
   if (selectedNode.value && selectedNode.value.layerRef) {
     if (selectedNode.value.type === 'marker') {
@@ -1162,9 +1238,11 @@ const updateNodeStyle = (newStyle) => {
   }
 };
 
+// ===== [SECTION:updateBaseOpacity] =====
 const updateBaseOpacity = (val) => { baseOpacity.value = val; if (baseLayer) baseLayer.setOpacity(val); };
 const updateAnnoOpacity = (val) => { annoOpacity.value = val; if (annoLayer) annoLayer.setOpacity(val); };
 
+// ===== [SECTION:handleSearch] =====
 const handleSearch = async (query, callback) => {
   if (!map) return;
   callback('正在搜索...');
@@ -1185,11 +1263,13 @@ const handleSearch = async (query, callback) => {
   }
 };
 
+// ===== [SECTION:triggerUpload] =====
 const triggerUpload = (type) => {
   if (type === 'base') baseInputRef.value.click();
   else if (type === 'both') bothInputRef.value.click();
 };
 
+// ===== [SECTION:handleBaseUpload] =====
 const handleBaseUpload = async (event) => {
   const file = event.target.files[0]; if (!file) return;
   const url = URL.createObjectURL(file);
@@ -1197,6 +1277,7 @@ const handleBaseUpload = async (event) => {
   event.target.value = '';
 };
 
+// ===== [SECTION:handleBothUpload] =====
 const handleBothUpload = (event) => {
   const file = event.target.files[0]; if (!file) return;
   const reader = new FileReader();
@@ -1212,6 +1293,7 @@ const handleBothUpload = (event) => {
   event.target.value = '';
 };
 
+// ===== [SECTION:loadBaseImage] =====
 const loadBaseImage = async (imageSrc, fileObj = null, width = 0, height = 0) => {
   const img = new Image();
   img.onload = async () => {
@@ -1260,6 +1342,7 @@ const loadBaseImage = async (imageSrc, fileObj = null, width = 0, height = 0) =>
   img.src = imageSrc;
 };
 
+// ===== [SECTION:resetImage] =====
 const resetImage = () => {
   if (map) { map.remove(); map = null; }
   isCustomImageLoaded.value = false;
@@ -1269,6 +1352,7 @@ const resetImage = () => {
   currentBaseImageData = null;
 };
 
+// ===== [SECTION:restoreAnnotations] =====
 const restoreAnnotations = (annotations) => {
   if (!annotations || !Array.isArray(annotations) || !map) return;
   const isValidPoint = (pt) => Array.isArray(pt) && pt.length >= 2 && Number.isFinite(pt[0]) && Number.isFinite(pt[1]);
@@ -1355,8 +1439,10 @@ const restoreAnnotations = (annotations) => {
 //   （数据源是数据库，补跑一次拿到的永远是最新的完整集，语义正确）。
 //   ⚠️ 只加锁、不改 loadHistoricalLayers —— 它同时被 initMap（:452/:1240）调用，
 //      那些路径不需要清空（initMap 一生只跑一次），故保留 concat 不变。
+// ===== [SECTION:refreshInProgress] =====
 let refreshInProgress = false;
 let refreshPending = false;
+// ===== [SECTION:refreshDataFromDB] =====
 const refreshDataFromDB = async () => {
   if (refreshInProgress) {
     refreshPending = true;
@@ -1380,6 +1466,7 @@ const refreshDataFromDB = async () => {
 };
 
 // 导出工程时 NaN 校验 + coords 回退
+// ===== [SECTION:getProjectData] =====
 const getProjectData = () => {
   const layersWithCoords = drawnLayers.value.map(item => {
     let coords = extractCoordsFromLayer(item);
@@ -1397,6 +1484,7 @@ const getProjectData = () => {
   return JSON.parse(JSON.stringify(rawData));
 };
 
+// ===== [SECTION:loadProjectData] =====
 const loadProjectData = async (projectData) => {
   if (props.config.toolId === 'geo-eagle-eye') {
     alert('“鹰眼公共平台”是独立工具，它的数据是自动永久保存的，不支持加载工程文件覆盖数据，以免造成数据丢失。');
@@ -1493,6 +1581,7 @@ const loadProjectData = async (projectData) => {
   forceAutoSave();
 };
 
+// ===== [SECTION:saveProjectToInventoryAction] =====
 const saveProjectToInventoryAction = async (projectName) => {
   const data = getProjectData();
   data.name = projectName || `工程_${new Date().getTime()}`;
@@ -1500,6 +1589,7 @@ const saveProjectToInventoryAction = async (projectName) => {
 };
 
 // 🤖 AI 批量导入完成后的处理：刷新地图 + 补充分组 + 通知
+// ===== [SECTION:handleAiImported] =====
 const handleAiImported = async (result) => {
   if (!result || !result.imported) return;
   // 把新分组补进 groups，让图形列表下拉可见
@@ -1510,6 +1600,7 @@ const handleAiImported = async (result) => {
 };
 
 // 🤖 对外暴露的导入入口（供外部 AI 通道直接调用）
+// ===== [SECTION:importAiBatchAction] =====
 const importAiBatchAction = async (batchData, onProgress) => {
   const safeFileId = props.config.toolId === 'geo-eagle-eye' ? 'legacy-file' : (props.fileId || 'legacy-file');
   const res = await importAiBatch({

@@ -25,10 +25,12 @@ import { canvasToLatLng, getElementAnchor, getElementGeometry, isValidBounds, is
 //    动态 import 不产生分块收益，反而会触发 Vite 的 INEFFECTIVE_DYNAMIC_IMPORT 警告。
 import { getBoard, saveBoard, getAllBoards, WB_LEGACY_BOARD_ID } from './boardStore.js';
 
+// ===== [SECTION:WB_TOOL_ID] =====
 export const WB_TOOL_ID = 'wb-whiteboard';
 
 // 白板元素 → annotation 的 id 映射：sceneElementId -> WB.00001
 // 内存态，随白板会话存活；持久化副本写在 annotation.wbElementId 上，刷新后可重建
+// ===== [SECTION:ElementIdMap] =====
 export class ElementIdMap {
   constructor() {
     this.byElement = new Map();    // wbElementId -> annotationId
@@ -68,6 +70,7 @@ export class ElementIdMap {
 }
 
 // 从数据库已有记录重建映射（刷新页面后恢复关联）
+// ===== [SECTION:rebuildIdMap] =====
 export const rebuildIdMap = async (fileId) => {
   const map = new ElementIdMap();
   try {
@@ -101,6 +104,7 @@ export const rebuildIdMap = async (fileId) => {
 //   screenX = element.x * zoom + scrollX
 // element.x 即「世界坐标」（与视图平移无关，这正是我们要的稳定量）。
 // panning 只改 appState.scrollX，不改 element.x，所以直接用 element.x/y 即天然归一化。
+// ===== [SECTION:toWorldPoint] =====
 export const toWorldPoint = (element) => {
   if (!element) return null;
   const x = Number(element.x);
@@ -110,6 +114,7 @@ export const toWorldPoint = (element) => {
 };
 
 // 反向：世界坐标 → 屏幕坐标（需要把点定位进当前视口时用，如 scrollToElement 兜底换算）
+// ===== [SECTION:worldToScreen] =====
 export const worldToScreen = (point, appState) => {
   if (!point) return null;
   const scrollX = Number(appState && appState.scrollX) || 0;
@@ -118,12 +123,14 @@ export const worldToScreen = (point, appState) => {
   return { x: point.x * zoom + scrollX, y: point.y * zoom + scrollY };
 };
 
+// ===== [SECTION:getFallbackName] =====
 export const getFallbackName = (element) =>
   String((element && element.id) || '').trim();
 
 // 元素名称来源：约定写在 customData.name（兼容 customData.title）；
 // 🖊️ 全登记路线：没有自定义名称时返回 element.id，保证「无名元素」也能拿到有效指纹入库。
 //    注意：调用方若需要「区分原名 / 兜底名」，请另外调 getCustomName 判断。
+// ===== [SECTION:getElementName] =====
 export const getElementName = (element) => {
   if (!element) return '';
   const cd = element.customData || {};
@@ -134,6 +141,7 @@ export const getElementName = (element) => {
 };
 
 // 仅取用户显式填写的名称（不含 element.id 兜底），用于判断是否需要在 UI 引导用户命名
+// ===== [SECTION:getCustomName] =====
 export const getCustomName = (element) => {
   if (!element) return '';
   const cd = element.customData || {};
@@ -142,6 +150,7 @@ export const getCustomName = (element) => {
 };
 
 // 分组来源：customData.group，缺省归入「默认」
+// ===== [SECTION:getElementGroup] =====
 export const getElementGroup = (element) => {
   const cd = (element && element.customData) || {};
   const g = String(cd.group || '').trim();
@@ -149,11 +158,13 @@ export const getElementGroup = (element) => {
 };
 
 // 白板元素类型：加 wb- 前缀，防止与地图元素指纹碰撞
+// ===== [SECTION:getWbType] =====
 export const getWbType = (element) => `wb-${(element && element.type) || 'element'}`;
 
 // 判定元素是否「可登记」：只要有 id（指纹兜底名）且坐标换算成功即可登记。
 // 🖊️ 全登记路线：不要求必须有用户填写的名称 —— 匿名元素的指纹用 element.id 参与计算。
 //    唯一排除项：已软删除、无 id、无法换算坐标（bounds/canvas 缺失或非法）的元素。
+// ===== [SECTION:isRegisterable] =====
 export const isRegisterable = (element, bounds, canvas) => {
   if (!element || element.isDeleted) return false;
   // 🚨【第 25 轮】这里查的是「指纹兜底名」是否可用（getElementName 恒返回 element.id 兜底），
@@ -167,6 +178,7 @@ export const isRegisterable = (element, bounds, canvas) => {
 
 // ---------- 记录构造 ----------
 
+// ===== [SECTION:escapeHtml] =====
 const escapeHtml = (s) => String(s)
   .replace(/&/g, '&amp;')
   .replace(/</g, '&lt;')
@@ -183,6 +195,7 @@ const escapeHtml = (s) => String(s)
 //   · 但指纹维度 `buildFingerprint` **要求 name 非空**（缺任一维度指纹为空 ⇒ 元素登记不上）。
 //     故指纹计算不看 title/objectName，而由调用方传 `fpName`（匿名时 = element.id）单独喂入。
 //   ⚠️ 指纹算法本身（fingerprint.js）一行未动；这里只是「喂给它的字段值」不同。
+// ===== [SECTION:buildAnnotation] =====
 const buildAnnotation = ({ element, annotationId, fileId, bounds, canvas, group, name }) => {
   const anchor = getElementAnchor(element);
   const geo = canvasToLatLng(anchor, bounds, canvas) || {};
@@ -229,6 +242,7 @@ const buildAnnotation = ({ element, annotationId, fileId, bounds, canvas, group,
  *   都可能被它误伤，而且它与 objectName 语义重复、永不同步。
  *   ⇒ 凡是「要写库」的 layer，一律先过这个函数。
  */
+// ===== [SECTION:stripTransientFields] =====
 const stripTransientFields = (layer) => {
   if (!layer || typeof layer !== 'object') return layer;
   const { __fpName, ...rest } = layer;
@@ -239,6 +253,7 @@ const stripTransientFields = (layer) => {
 //   原先会自动塞入「名称 / 文字 /（由白板元素自动登记…）」三段模板，
 //   用户认为这是无意义噪音，应让富文本默认干净、由用户自己填。
 //   故本函数现在恒返回空字符串（保留函数签名与调用点，便于日后回退或再加模板）。
+// ===== [SECTION:buildDefaultDocHtml] =====
 export const buildDefaultDocHtml = () => {
   return '';
 };
@@ -264,6 +279,7 @@ export const buildDefaultDocHtml = () => {
  *   （注意：不是 annotationId，也不是数量）。调用方应据此把对应元素**从画布内存剔除**，
  *   使画布与回收站收敛。详见下方 D 块注释。
  */
+// ===== [SECTION:syncScene] =====
 export const syncScene = async ({
   elements,
   idMap,
@@ -552,6 +568,7 @@ export const syncScene = async ({
 /**
  * 手动为单个元素补登记（UI 引导用户命名后调用）
  */
+// ===== [SECTION:registerElement] =====
 export const registerElement = async ({
   element, idMap, bounds, canvas, fileId = 'legacy-file', name, group
 }) => {
@@ -608,6 +625,7 @@ export const registerElement = async ({
  * @param {object} [opts.canvas]          - 近似重建用画布基准尺寸
  * @returns {Promise<{revived:number, rebuilt:number, missing:string[], scene:Array}>}
  */
+// ===== [SECTION:restoreElementsToBoard] =====
 export const restoreElementsToBoard = async (boardId, wbElementIds, opts = {}) => {
   const result = { revived: 0, rebuilt: 0, missing: [], scene: [] };
   if (!boardId || !Array.isArray(wbElementIds) || wbElementIds.length === 0) return result;
@@ -677,6 +695,7 @@ export const restoreElementsToBoard = async (boardId, wbElementIds, opts = {}) =
 //   text：renderText 读 text / fontFamily / fontSize（缺任一即崩）
 //   image：读 fileId 去 files 表取图（缺则崩）
 //   frame：读 children 数组（缺则崩）
+// ===== [SECTION:REQUIRED_FIELDS_BY_TYPE] =====
 const REQUIRED_FIELDS_BY_TYPE = {
   text: ['text', 'fontFamily', 'fontSize'],
   image: ['fileId'],
@@ -688,6 +707,7 @@ const REQUIRED_FIELDS_BY_TYPE = {
  * @param {object} el - 待校验元素
  * @returns {{ok:boolean, missing:string[]}} ok=false 时 missing 列出缺失/非法的字段
  */
+// ===== [SECTION:validateElement] =====
 export const validateElement = (el) => {
   const missing = [];
   if (!el || typeof el !== 'object') return { ok: false, missing: ['(非对象)'] };
@@ -727,6 +747,7 @@ export const validateElement = (el) => {
  * ⚠️ 只做「内存中剔除」，**不写库、不删 annotations** ——
  *    用户在信息数据库里仍能看到这些元素记录，可自行决定是否清理。
  */
+// ===== [SECTION:filterBrokenElements] =====
 export const filterBrokenElements = (elements) => {
   const list = Array.isArray(elements) ? elements : [];
   const safe = [];
@@ -747,6 +768,7 @@ export const filterBrokenElements = (elements) => {
 };
 
 // 收尾：兜底近似重建（降级路径）+ 落库
+// ===== [SECTION:finalizeRestore] =====
 const finalizeRestore = async (board, scene, result, opts, canRebuild) => {
   if (result.missing.length > 0 && canRebuild) {
     const layers = await getAllLayers(WB_TOOL_ID, board.fileId || 'legacy-file') || [];
@@ -908,6 +930,7 @@ const finalizeRestore = async (board, scene, result, opts, canRebuild) => {
  *   ⚠️【E1 契约】返回的 `scene` **尚未落库**，调用方必须自己持久化
  *      （先 getBoard 取全量 → 权威写），否则恢复结果会丢失。
  */
+// ===== [SECTION:restoreRecycledElements] =====
 export const restoreRecycledElements = async (recycleRecords, opts = {}) => {
   const list = Array.isArray(recycleRecords) ? recycleRecords : [];
   const ids = [];
@@ -937,6 +960,7 @@ export const restoreRecycledElements = async (recycleRecords, opts = {}) => {
   });
 };
 
+// ===== [SECTION:getRegisteredElements] =====
 export const getRegisteredElements = async (fileId = 'legacy-file') => {
   try {
     return await getAllLayers(WB_TOOL_ID, fileId || 'legacy-file') || [];
