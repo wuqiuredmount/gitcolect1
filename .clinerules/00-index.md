@@ -14,15 +14,15 @@
 1. **先读** `.agents/PROJECT_MEMO.md`（唯一记忆文件，必读，无例外）。
 2. **再读协作信箱** `.agents/mailbox/to-cline.md`
    （若存在且非空 → 那是 DeepSeek 写给你的指令，优先处理；读完标注「（已读）」或清空，避免重复处理）。
-3. **白板任务**再读（存在才读，不存在则跳过并在报告里说明）：
-   - `.agents/references/whiteboard-integration.md`（路线 A 交接：目标/约束/数据映射）
-   - `.agents/references/whiteboard-autonomous-plan.md`（自主执行指南：任务清单/红线）
-   - `.agents/references/whiteboard-full-capability-plan.md`（**当前不存在**，属预期；
-     若用户后续创建，白板任务必须读）
-4. **地图数据任务**按需读下表对应 skill（见「一、触发式加载」）。
-5. **动手前先复述**：「上次进度 + 本轮要做什么」，等用户确认后再改代码。
-6. 复述内容以 MEMO 的「六、待办」为准，不要凭记忆。
-7. **每完成一个任务，报告写进** `.agents/mailbox/to-deepseek.md`（覆盖式，只留本轮），
+3. **定位文件用架构地图**（2026-10-08 新增）：`.agents/references/architecture-map.md`
+   —— 一站式架构图 + 「改任务时的定位流程」表。**先读它、再决定要不要读局部**，不要先扫全仓。
+4. **白板任务**再按需读（**P0/P1/P2 已完成**，不再主动读已完成的规划）：
+   - `.agents/references/whiteboard-integration.md`（路线 A 原始约束，**已实施完**）
+   - ⚠️ `whiteboard-autonomous-plan.md` **已归档**，除非用户在改遗留 bug，不再读
+5. **地图数据任务**按需读下表对应 skill（见「一、触发式加载」）。
+6. **动手前先复述**：「上次进度 + 本轮要做什么」，等用户确认后再改代码。
+7. 复述内容以 MEMO 的「六、待办」为准，不要凭记忆。
+8. **每完成一个任务，报告写进** `.agents/mailbox/to-deepseek.md`（覆盖式，只留本轮），
    对话里简短说一句「报告已写入 mailbox」即可，不必在对话里重复全文。
 
 ---
@@ -33,7 +33,8 @@
 |---|---|
 | **每个新对话（无例外）** | `.agents/mailbox/to-cline.md`（存在且非空 = DeepSeek 的指令，优先处理；处理完标注「（已读）」或清空） |
 | 任何开发 / 数据 / 代码 / 调试任务 | `.agents/PROJECT_MEMO.md`（见「零」启动清单） |
-| **白板 / Excalidraw / wb- 相关任何改动** | `.agents/references/whiteboard-integration.md`<br>+ `.agents/references/whiteboard-autonomous-plan.md`<br>+ `.agents/references/whiteboard-full-capability-plan.md`（存在才读） |
+| **定位「改哪个文件」** | `.agents/references/architecture-map.md`（一站式架构图 + 定位流程表） |
+| **白板 / Excalidraw / wb- 相关任何改动** | `.agents/references/whiteboard-integration.md`（原始约束，已实施完）<br>+ `.agents/references/architecture-map.md` §四（白板模块现状） |
 | 修改、新增、删除代码文件 | `.agents/skills/代码修改返还完整代码/SKILL.md` |
 | 批量导入点位（5A/4A/景区/文保/门店等） | `.agents/skills/ai-import-geo-markers/SKILL.md` |
 | 删除数据 / 回收站 / 恢复 / 清理 | `.agents/skills/ai-recycle-bin-ops/SKILL.md` |

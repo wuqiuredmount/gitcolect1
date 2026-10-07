@@ -1342,14 +1342,41 @@ const restoreAnnotations = (annotations) => {
   });
 };
 
+// 🛡️【并发合并锁】修复「一键导入全部」时图形列表膨胀（4277 vs 实际 477）
+//
+// 【根因】AiImportPanel 的「一键导入全部」对每个文件 emit 一次 imported，
+//   → handleAiImported 每次都调 refreshDataFromDB → N 次并发进入。
+//   每次都是「清空 + 启动 loadHistoricalLayers」，而 loadHistoricalLayers 末尾是
+//     drawnLayers.value = drawnLayers.value.concat(created)   （line 641）
+//   由于所有并发调用都读同一份全局 drawnLayers.value，谁最后跑完谁的 concat 就在别人的基础上再叠一次
+//   → 结果 = 实际数据 × 并发次数（本例 477 × 9 ≈ 4277）。
+//
+// 【修法】同时只允许一次在跑；跑的过程中来的请求合并成「跑完后补跑一次」
+//   （数据源是数据库，补跑一次拿到的永远是最新的完整集，语义正确）。
+//   ⚠️ 只加锁、不改 loadHistoricalLayers —— 它同时被 initMap（:452/:1240）调用，
+//      那些路径不需要清空（initMap 一生只跑一次），故保留 concat 不变。
+let refreshInProgress = false;
+let refreshPending = false;
 const refreshDataFromDB = async () => {
-  // 🔬 诊断探针（2026-10-06，临时，定位「图形列表 4277 vs 数据库 462」bug）
-  //    看它是谁触发的、清空前的既有长度是多少（用于确认累加基数）
-  console.log('[诊断-RFD] 被调用，清空前 drawnLayers:', drawnLayers.value.length, '| 时间:', Date.now());
-  if (!map || !editableLayers) return;
-  editableLayers.clearLayers();
-  drawnLayers.value = [];
-  await loadHistoricalLayers();
+  if (refreshInProgress) {
+    refreshPending = true;
+    console.log('[refreshDataFromDB] 已有刷新进行中，合并为「完成后补一次」');
+    return;
+  }
+  refreshInProgress = true;
+  try {
+    if (!map || !editableLayers) return;
+    editableLayers.clearLayers();
+    drawnLayers.value = [];
+    await loadHistoricalLayers();
+  } finally {
+    refreshInProgress = false;
+    if (refreshPending) {
+      refreshPending = false;
+      console.log('[refreshDataFromDB] 补跑合并的刷新');
+      await refreshDataFromDB();
+    }
+  }
 };
 
 // 导出工程时 NaN 校验 + coords 回退

@@ -460,6 +460,11 @@ groups.value.forEach(group => {
     }
   });
 });
+// 🖊️ 白板是「虚拟工具」（不在 groups 静态数组里，见第 454 行 allToolsWithWhiteboard），
+//    但设置弹窗会渲染它 → globalToolSettings['wb-whiteboard'] 必须初始化，
+//    否则第 190 行 v-model="globalToolSettings[tool.id][widget.key]" 会对 undefined 取属性
+//    → TypeError → 整个 GisApp 渲染树挂起 → 所有顶栏按钮（含「设置」）都点不动。
+initToolSettings(WHITEBOARD_TOOL.id, {});
 
 onMounted(async () => {
   try {

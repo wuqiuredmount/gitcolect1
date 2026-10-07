@@ -29,11 +29,19 @@
       </div>
 
       <div v-if="archivedFiles.length > 0" class="archive-box">
-        <div>
+        <div class="archive-header">
           <b>📦 历史文件导入库</b>（{{ archivedFiles.length }} 个已归档）
           <button class="link-btn" :disabled="importing" @click="handleResetArchive">重置</button>
         </div>
-        <div class="archive-list">{{ archivedFiles.join('、') }}</div>
+        <!-- 🆕 按自然排序 + 序号分行显示：
+             为什么不用 join('、')：文件数量多时会挤成一行，无法快速定位，也看不出顺序。
+             序号用 1 起始的自然数，与「按序导入」的语义一致。 -->
+        <ol class="archive-list">
+          <li v-for="(fname, idx) in sortedArchivedFiles" :key="fname" class="archive-item">
+            <span class="archive-index">{{ idx + 1 }}.</span>
+            <span class="archive-name">{{ fname }}</span>
+          </li>
+        </ol>
       </div>
 
       <div v-if="preview" class="preview-box">
@@ -106,6 +114,22 @@ const pendingFiles = computed(() => {
   const archived = new Set(archivedFiles.value);
   return availableFiles.value.filter(f => !archived.has(f));
 });
+
+// 🆕 自然排序：让 batch-2 排在 batch-10 之前（字典序会反）
+//   例：['x-batch-10','x-batch-2'] 字典序是 10 在前；自然排序是 2 在前。
+//   用 localeCompare 的 numeric:true 选项，无需引第三方库。
+const naturalCompare = (a, b) =>
+  String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+
+// 🆕 已归档文件：按自然排序
+const sortedArchivedFiles = computed(() =>
+  [...archivedFiles.value].sort(naturalCompare)
+);
+
+// 🆕 待导入文件：按自然排序（用于「一键导入全部」的顺序）
+const sortedPendingFiles = computed(() =>
+  [...pendingFiles.value].sort(naturalCompare)
+);
 
 const canImport = computed(() => !!preview.value && !importing.value);
 
@@ -187,8 +211,10 @@ const startImport = async () => {
 };
 
 // 🚨 一键导入全部：只处理「待导入」文件，完成后归档并腾空清单
+// 🆕 按「自然排序后的序号」依次导入（避免 batch-10 排在 batch-2 之前）。
+//   逐文件串行 + 指纹去重（importAiBatch 内部已做）⇒ 重复数据自动跳过。
 const startImportAll = async () => {
-  const targets = [...pendingFiles.value];
+  const targets = [...sortedPendingFiles.value];
   if (!props.toolId || targets.length === 0) return;
 
   const ok = window.confirm(
@@ -313,7 +339,31 @@ onMounted(() => { refreshAll(); });
 .result-box { background: #f6ffed; border-color: #b7eb8f; }
 .error-box { background: #fff2f0; border-color: #ffccc7; color: #cf1322; }
 .archive-box { background: #f0f5ff; border-color: #adc6ff; }
-.archive-list { font-size: 10px; color: #555; max-height: 60px; overflow-y: auto; word-break: break-all; }
+.archive-header { display: flex; align-items: center; gap: 4px; }
+.archive-list {
+  margin: 4px 0 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 10px;
+  color: #555;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.archive-item {
+  display: flex;
+  gap: 6px;
+  padding: 1px 0;
+  line-height: 1.5;
+}
+.archive-item:hover { background: #e6f0ff; }
+.archive-index {
+  color: #888;
+  min-width: 24px;
+  text-align: right;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.archive-name { word-break: break-all; }
 .archive-note { color: #1890ff; }
 .cleanup-box { background: #fff7e6; border-color: #ffd591; }
 .dup-line { color: #7c3aed; }

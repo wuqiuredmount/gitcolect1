@@ -9,12 +9,24 @@
         <span class="btn-icon">⚙️</span>
         <span class="btn-text">探索和编辑分组</span>
       </button>
-      <select v-model="activeGroupFilter" class="group-filter-select" title="查看分组">
-        <option value="全部">全部（{{ layers.length }}）</option>
-        <option v-if="enableHotspot" value="热点信息">🔥 热点信息（{{ hotspotIds.length }}）</option>
-        <option v-for="g in allGroups" :key="g" :value="g">{{ g }}（{{ countByGroup(g) }}）</option>
-      </select>
-      <button v-if="enableHotspot" class="group-btn" @click="$emit('refresh-hotspot')" title="重新随机选取热点信息">🔥 刷新热点</button>
+      <!-- 🆕 下拉 + 刷新：合并为一个整体控件（刷新按钮变成紧贴右侧的圆圈箭头）
+           为什么合并：原「🔥 刷新热点」按钮独立占位，视觉上像第三个控件，
+           但它语义上只服务于紧邻的下拉（重新随机热点），合并后层次更清楚、更省横向空间。
+           ⚠️ 刷新按钮只在 enableHotspot=true（鹰眼）时渲染；白板/其他地图工具不传该 prop，
+              完全不受影响。 -->
+      <div class="filter-combo">
+        <select v-model="activeGroupFilter" class="group-filter-select" title="查看分组">
+          <option value="全部">全部（{{ layers.length }}）</option>
+          <option v-if="enableHotspot" value="热点信息">🔥 热点信息（{{ hotspotIds.length }}）</option>
+          <option v-for="g in allGroups" :key="g" :value="g">{{ g }}（{{ countByGroup(g) }}）</option>
+        </select>
+        <button
+          v-if="enableHotspot"
+          class="refresh-icon-btn"
+          @click="$emit('refresh-hotspot')"
+          title="重新随机选取热点信息"
+        >🔄</button>
+      </div>
     </div>
 
     <!-- 展开的列表面板 -->
@@ -324,6 +336,47 @@ const goToFavorite = (item) => {
 .group-btn .btn-text { font-weight: 500; }
 
 .group-filter-select { padding: 0 4px; font-size: 12px; background: #f0f0f0; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; height: 28px; box-sizing: border-box; outline: none; color: #333; max-width: 150px; }
+
+/* 🆕 下拉 + 刷新按钮：合并为「一个下拉框」，刷新按钮嵌在框内、括号外右侧
+   做法：把 🔄 用 absolute 定位塞进 select 的 padding-right 空白区，
+        并用自己的 SVG 箭头替换浏览器原生箭头（原生箭头跨浏览器位置不一，无法精确让位）。 */
+.filter-combo {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+}
+.filter-combo .group-filter-select {
+  /* 关掉原生箭头 + 自绘箭头，位置可控 */
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 46px;   /* 给 🔄(20px) + 箭头(10px) + 间隙 留出空间 */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5 L5 6.5 L8 3.5' fill='none' stroke='%23888' stroke-width='1.4' stroke-linecap='round'/></svg>");
+  background-position: right 6px center;
+  background-repeat: no-repeat;
+}
+.refresh-icon-btn {
+  position: absolute;
+  right: 20px;           /* 落在自绘箭头左侧 */
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #666;
+  transition: 0.15s;
+}
+.refresh-icon-btn:hover { background: #e6f7ff; color: #1890ff; }
 
 .dropdown-panel { position: absolute; top: 100%; left: 0; margin-top: 5px; width: 400px; max-height: min(80vh, 820px); background: #fff; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); border: 1px solid #e5e7eb; display: flex; flex-direction: column; z-index: 1000; overflow: hidden; }
 .panel-header-actions { display: flex; align-items: center; gap: 5px; padding: 8px 10px; border-bottom: 1px solid #eee; background: #f8f9fa; }

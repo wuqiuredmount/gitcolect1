@@ -12,8 +12,8 @@
 
         <!-- 🚨 右侧：文字与入口 -->
         <div class="hero-right">
-          <div class="title">良件（天津）数据信息技术有限公司</div>
-          <div class="slogan">空间信息共享与集成 · 让数据在互动中创造价值</div>
+          <div class="title">良件-鹰眼</div>
+          <div class="slogan">信息空间分布数据共享与集成 · 让数据在互动中创造价值</div>
           
           <!-- 三个产品入口 -->
           <div class="group-entry-container">
@@ -93,6 +93,59 @@
         <div class="p" style="margin-top: 16px; font-weight: 500;">
           <span>邮箱：</span>
           <span class="email">1990568835@qq.com</span>
+        </div>
+      </div>
+
+      <!-- 模块五：版权与开源协议声明 -->
+      <div class="card footer-card">
+        <div class="footer-copyright">
+          <span class="strong">软件/网页内测阶段</span>
+          <span> · </span>
+          <span>版权所有 © 良件（天津）数据信息技术有限公司</span>
+        </div>
+
+        <div class="footer-section">
+          <div class="footer-title">
+            <span>📜 开源协议声明</span>
+          </div>
+          <div class="footer-body">
+            <p>
+              本软件/网页中的「<span class="highlight">Excalidraw 白板</span>」功能区基于开源项目
+              <a class="footer-link" href="https://github.com/excalidraw/excalidraw" target="_blank" rel="noopener noreferrer">Excalidraw</a>
+              构建，遵循其 <span class="highlight">MIT License</span> 开源协议。
+              我们在此致谢 Excalidraw 开源社区，并承诺遵守协议的全部条款。
+            </p>
+            <p class="footer-license-meta">
+              · 上游版本：<code>@excalidraw/excalidraw@0.18.1</code>
+              &nbsp;|&nbsp; 协议类型：MIT License
+              &nbsp;|&nbsp; 版权归属：Copyright (c) 2020 Excalidraw
+            </p>
+            <p class="footer-license-meta">
+              · 依据 MIT 协议要求，我们保留了原始版权声明与许可声明；
+              未使用 Excalidraw 的名义进行任何商业背书；
+              对原项目的任何修改均以独立模块形式存在，不改变原项目的授权条款。
+            </p>
+          </div>
+        </div>
+
+        <div class="footer-section">
+          <div class="footer-title">
+            <span>📍 功能区位置</span>
+          </div>
+          <div class="footer-body">
+            <p>
+              上述基于 Excalidraw 的「白板 + 数据信息」功能区，位于本软件的
+              <span class="highlight">第三个产品入口</span>：
+            </p>
+            <p class="footer-location">
+              · 入口位置：初始界面顶部「🖊️ Excalidraw 白板 + 数据信息」卡片
+              &nbsp;|&nbsp; 访问路径：<code>/gis/whiteboard</code>
+            </p>
+            <p class="footer-location">
+              · 主要能力：自由绘图 / 图形元素编号与指纹识别 / 富文本详情编辑 /
+              回收站软删除恢复 / 与地图工具共享同一套数据结构
+            </p>
+          </div>
         </div>
       </div>
     </div>
@@ -303,4 +356,53 @@ const goToGisApp = (groupId) => {
 .contact-card .h2 { color: white; border-left-color: white; }
 .contact-card .p { color: #ccfbf1; }
 .contact-card .email { color: #ffffff; text-decoration: underline; }
+
+/* 页脚：版权与开源协议声明 */
+.footer-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+.footer-copyright {
+  text-align: center;
+  color: #64748b;
+  font-size: 13px;
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+  border-bottom: 1px dashed #e2e8f0;
+}
+.footer-section {
+  margin-bottom: 16px;
+}
+.footer-section:last-child { margin-bottom: 0; }
+.footer-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f766e;
+  margin-bottom: 8px;
+}
+.footer-body {
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.8;
+}
+.footer-body p { margin: 0 0 8px 0; }
+.footer-body p:last-child { margin-bottom: 0; }
+.footer-license-meta,
+.footer-location {
+  color: #64748b;
+  font-size: 12px;
+}
+.footer-body code {
+  background: #e2e8f0;
+  color: #0f766e;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 12px;
+}
+.footer-link {
+  color: #0f766e;
+  text-decoration: underline;
+}
+.footer-link:hover { color: #115e59; }
 </style>
