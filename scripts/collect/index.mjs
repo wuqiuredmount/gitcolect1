@@ -58,26 +58,60 @@ function writeCache(c) {
   writeFileSync(CACHE_FILE, JSON.stringify(c, null, 2), 'utf8');
 }
 
+// 单次高德 geocode 请求
+async function geocodeOnce(address) {
+  const url = 'https://restapi.amap.com/v3/geocode/geo?address=' + encodeURIComponent(address) + '&key=' + AMAP_KEY;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  let data;
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    data = await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+  if (data && data.status === '1' && data.geocodes && data.geocodes.length) {
+    const [lng, lat] = data.geocodes[0].location.split(',').map(Number);
+    return { ok: true, val: { lng, lat, formatted: data.geocodes[0].formatted_address || '' } };
+  }
+  const info = (data && data.info) || '';
+  // QPS 限流 / 网络瞬时错误 → 可重试
+  const retriable = /CUQPS|QPS|EXCEEDED|LIMIT|timeout|abort/i.test(info) || !data;
+  return { ok: false, retriable, info };
+}
+
+// 带重试的 geocode（F3）
 async function geocode(address, cache) {
   const k = String(address).trim();
   if (!k) return null;
-  if (k in cache) return cache[k];
-  let out = null;
-  try {
-    const url = 'https://restapi.amap.com/v3/geocode/geo?address=' + encodeURIComponent(k) + '&key=' + AMAP_KEY;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data.status === '1' && data.geocodes && data.geocodes.length) {
-      const [lng, lat] = data.geocodes[0].location.split(',').map(Number);
-      out = { lng, lat, formatted: data.geocodes[0].formatted_address || '' };
+  if (k in cache && cache[k]) return cache[k]; // 只信任已成功的缓存
+
+  const MAX_TRIES = 3;
+  for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+    try {
+      const r = await geocodeOnce(k);
+      if (r.ok) {
+        cache[k] = r.val;
+        writeCache(cache);
+        await sleep(400); // 成功也节流，规避 QPS 限制
+        return r.val;
+      }
+      if (r.retriable && attempt < MAX_TRIES) {
+        const backoff = 800 * attempt; // 递增退避
+        if (process.env.COLLECT_DEBUG) console.error('  [geocode] ' + k + ' 可重试失败(' + r.info + ')，' + backoff + 'ms 后重试 ' + attempt + '/' + (MAX_TRIES - 1));
+        await sleep(backoff);
+        continue;
+      }
+      // 不可重试（地址无结果）→ 直接放弃
+      break;
+    } catch (e) {
+      if (attempt < MAX_TRIES) { await sleep(800 * attempt); continue; }
     }
-  } catch (e) {
-    out = null;
   }
-  cache[k] = out;
-  writeCache(cache);
-  await sleep(400); // 节流，规避高德 QPS 限制（实测 <350ms 会报 CUQPS_HAS_EXCEEDED_THE_LIMIT）
-  return out;
+
+  // 全部失败：不写入缓存（避免失败结果被永久缓存）
+  await sleep(400);
+  return null;
 }
 
 // ---------- 带备份的写入（复用 data-ops 白名单） ----------
