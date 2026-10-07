@@ -97,6 +97,41 @@
 
 ---
 
+## 数据文件免审批通道（2026-10-08 用户授权）
+
+**背景**：write_file / edit_file 因 `destructiveHint:true` 永远弹窗审批（webcode 硬编码），导致数据文件（导入 JSON / 清单）的常规写入也频繁要人工确认。
+
+**用户授权**：数据文件操作走 `npm run data-ops` 免审批通道（用户有回收站 + 历史库 + 本地备份三重兜底）。
+
+### 边界（硬编码在脚本内，不可绕过）
+
+- 允许：`public/ai-import/**`、`public/pending-unplaced/**`
+- 拒绝：`src/**`、`.agents/**`、根配置文件、工作区外路径
+- 拒绝：绝对路径、`..` 上级、反斜杠路径
+- 自动备份：每次写/删前 → `.cache/data-backups/`
+- JSON 校验：.json 文件写入前强制 JSON.parse 通过
+
+### 命令
+
+- `npm run data-ops -- write <relPath> <srcFile>`：从文件写入
+- `npm run data-ops -- write <relPath> --inline`：从 stdin 写入
+- `npm run data-ops -- delete <relPath>`：删除（自动备份）
+- `npm run data-ops -- list <relDir>`：列出目录
+- `npm run data-ops -- restore <backupFile>`：查看备份
+
+### 绝对禁止
+
+- 用 data-ops 改 src 下任何代码文件（会被路径白名单拒绝）
+- 用 execute_command 直接 `echo >` / `rm` 数据文件绕过 data-ops（脚本内置的备份 + JSON 校验就失效了）
+- 把 ALLOWED_ROOTS 数组改宽（改了就破坏安全边界）
+
+### 与 write_file 的分工
+
+- 代码文件（src / 配置 / 脚本）→ write_file / edit_file → 强制审批（不绕）
+- 数据文件（public/ai-import、pending-unplaced）→ npm run data-ops → 免审批（用户已授权）
+
+---
+
 ## 七、AI 自查清单（动手前问自己 5 句）
 
 1. 我要改的文件在**红线清单**里吗？
