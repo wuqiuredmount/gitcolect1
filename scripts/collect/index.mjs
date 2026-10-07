@@ -76,7 +76,7 @@ async function geocode(address, cache) {
   }
   cache[k] = out;
   writeCache(cache);
-  await sleep(200); // 节流，保护高德额度
+  await sleep(400); // 节流，规避高德 QPS 限制（实测 <350ms 会报 CUQPS_HAS_EXCEEDED_THE_LIMIT）
   return out;
 }
 
