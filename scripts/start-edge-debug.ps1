@@ -1,53 +1,108 @@
 # scripts/start-edge-debug.ps1
-# 一键启动带远程调试端口的 Edge 实例（供 webcode 的 edge-devtools 采集使用）
+# Launch Edge instances with remote debugging ports for webcode edge-devtools.
 #
-# 用法：右键「使用 PowerShell 运行」，或在终端执行：
+# Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts/start-edge-debug.ps1
-#   powershell -ExecutionPolicy Bypass -File scripts/start-edge-debug.ps1 -Port 9223 -Profile edge-debug-a
+#       -> launch 9222-9225 (default configured set)
+#   powershell -ExecutionPolicy Bypass -File scripts/start-edge-debug.ps1 -All
+#       -> launch 9222-9227 (all)
+#   powershell -ExecutionPolicy Bypass -File scripts/start-edge-debug.ps1 -Ports 9222,9223
+#       -> launch only the given ports
+#   powershell -ExecutionPolicy Bypass -File scripts/start-edge-debug.ps1 -Quiet
+#       -> only print one summary line (for AI parsing)
 #
-# 为什么需要独立实例：日常在用的 Edge 没开调试端口，直连会失败。
-# 独立 user-data-dir 保证：① 不影响你正在用的浏览器 ② 登录态（如高德）可保留
+# Features:
+#   - Idempotent: ports already listening are skipped
+#   - Isolated user-data-dir: does not touch your daily browser; keeps login state
+#   - Batch launch: multiple ports in one run
 
 param(
-  [int]$Port = 9222,
-  [string]$Profile = 'edge-debug-profile'
+  [string]$Ports = '',
+  [switch]$All,
+  [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Stop'
 
+# port -> user-data-dir mapping (register new ports here)
+$ProfileMap = @{
+  9222 = 'edge-debug-profile'
+  9223 = 'edge-debug-a'
+  9224 = 'edge-debug-b'
+  9225 = 'edge-debug-c'
+  9226 = 'edge-debug-d'
+  9227 = 'edge-debug-e'
+}
+
+# resolve target ports (split on comma/space to survive -File arg passing)
+if ($Ports) {
+  $targets = $Ports -split '[,\s]+' | Where-Object { $_ } | ForEach-Object { [int]$_ }
+} elseif ($All) {
+  $targets = $ProfileMap.Keys | Sort-Object
+} else {
+  $targets = @(9222, 9223, 9224, 9225)
+}
+
+# locate msedge.exe
 $exe = @(
   'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
   'C:\Program Files\Microsoft\Edge\Application\msedge.exe'
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if (-not $exe) {
-  Write-Error '未找到 msedge.exe，请确认 Edge 已安装。'
+  Write-Error 'msedge.exe not found. Is Edge installed?'
   exit 1
 }
 
-$dir = Join-Path $env:USERPROFILE $Profile
+$started = @()
+$already = @()
+$failed = @()
 
-# 已在监听则不重复启动
-$listening = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-if ($listening) {
-  Write-Host "端口 $Port 已在监听，无需重复启动。" -ForegroundColor Yellow
+foreach ($port in $targets) {
+  $profile = if ($ProfileMap.ContainsKey($port)) { $ProfileMap[$port] } else { "edge-debug-$port" }
+  $dir = Join-Path $env:USERPROFILE $profile
+
+  $listening = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+  if ($listening) {
+    $already += $port
+    if (-not $Quiet) { Write-Host "Port $port already listening, skipped." -ForegroundColor Yellow }
+    continue
+  }
+
+  try {
+    Start-Process -FilePath $exe -ArgumentList @(
+      "--remote-debugging-port=$port",
+      "--user-data-dir=$dir",
+      '--no-first-run',
+      '--no-default-browser-check'
+    )
+    if (-not $Quiet) { Write-Host "Started: port $port -> $dir" -ForegroundColor Cyan }
+    $started += $port
+  } catch {
+    $failed += $port
+    if (-not $Quiet) { Write-Host "Port $port failed to start: $($_.Exception.Message)" -ForegroundColor Red }
+  }
+}
+
+if ($started.Count -gt 0) { Start-Sleep -Seconds 5 }
+
+$ok = @()
+foreach ($port in ($started + $already)) {
+  try {
+    $r = Invoke-WebRequest -Uri "http://127.0.0.1:$port/json/version" -UseBasicParsing -TimeoutSec 5
+    if ($r.StatusCode -eq 200) { $ok += $port }
+  } catch { $failed += $port }
+}
+
+if ($Quiet) {
+  Write-Output "READY=$($ok -join ',')"
+  if ($failed.Count -gt 0) { Write-Output "FAILED=$($failed -join ',')" }
 } else {
-  Write-Host "启动 Edge 调试实例：端口 $Port，数据目录 $dir" -ForegroundColor Cyan
-  Start-Process -FilePath $exe -ArgumentList @(
-    "--remote-debugging-port=$Port",
-    "--user-data-dir=$dir",
-    '--no-first-run',
-    '--no-default-browser-check'
-  )
-  Start-Sleep -Seconds 4
+  Write-Host ''
+  Write-Host "OK ports: $($ok -join ', ')" -ForegroundColor Green
+  if ($already.Count -gt 0) { Write-Host "already running: $($already -join ', ')" -ForegroundColor DarkGray }
+  if ($failed.Count -gt 0) { Write-Host "FAILED ports: $($failed -join ', ')" -ForegroundColor Red }
 }
 
-# 验证连通
-try {
-  $ver = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/json/version" -UseBasicParsing -TimeoutSec 5
-  Write-Host "✅ 已就绪：$Port" -ForegroundColor Green
-  Write-Host $ver.Content
-} catch {
-  Write-Error "端口 $Port 未就绪：$($_.Exception.Message)"
-  exit 1
-}
+if ($ok.Count -eq 0) { exit 1 }
+exit 0
