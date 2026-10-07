@@ -23,8 +23,8 @@
         <button
           v-if="enableHotspot"
           class="refresh-icon-btn"
-          @click="$emit('refresh-hotspot')"
-          title="重新随机选取热点信息"
+          @click="handleRefreshClick"
+          :title="isHotspotView ? '重新随机选取热点信息' : `重新随机选取「${activeGroupFilter}」的显示图形`"
         >🔄</button>
       </div>
     </div>
@@ -199,7 +199,7 @@ const props = defineProps({
   //   白板侧：无显示窗口、无轮换（不传 displayIds / 不启动定时器）→ 传 true，避免文案说谎
   hideWindowHint: { type: Boolean, default: false }
 });
-const emit = defineEmits(['locate', 'add-group', 'remove-group', 'rename-group', 'update-layer-group', 'delete-layer', 'filter-group', 'refresh-hotspot']);
+const emit = defineEmits(['locate', 'add-group', 'remove-group', 'rename-group', 'update-layer-group', 'delete-layer', 'filter-group', 'refresh-hotspot', 'refresh-group']);
 
 const PRESET_GROUPS = ['默认', '5A级景区', '中国4A级景区'];
 const isPresetGroup = (name) => PRESET_GROUPS.includes(name);
@@ -277,6 +277,15 @@ const toggleExpand = (g) => {
 };
 
 const openEditGroupModal = () => { isEditGroupOpen.value = true; };
+
+// 🚨 刷新按钮：按当前下拉视图分派刷新目标（2026-10-07 修正「写死热点」）
+//   · 热点信息 → refresh-hotspot（重新随机热点，原有行为）
+//   · 其他分组 / 全部 → refresh-group（重新随机采样该视图的显示窗口，不切分组）
+const isHotspotView = computed(() => activeGroupFilter.value === HOTSPOT_GROUP);
+const handleRefreshClick = () => {
+  if (isHotspotView.value) emit('refresh-hotspot');
+  else emit('refresh-group', activeGroupFilter.value);
+};
 
 // 🚨 分组改名：进入编辑态（自动聚焦 + 全选）
 const startRename = async (g) => {

@@ -78,6 +78,7 @@
           @delete-layer="handleSoftDeleteLayer"
           @filter-group="handleFilterGroup"
           @refresh-hotspot="handleRefreshHotspot"
+          @refresh-group="handleRefreshGroup"
         />
       </Teleport>
 
@@ -939,11 +940,22 @@ const applyDisplayForView = (view) => {
   return ids;
 };
 
-// 手动刷新热点（供图形列表的「刷新热点」按钮调用）
+// 手动刷新热点（供图形列表的「刷新」按钮调用，仅当视图=热点信息时）
 // ===== [SECTION:handleRefreshHotspot] =====
 const handleRefreshHotspot = () => {
   saveHotspotIds(buildHotspotIds());
   applyDisplayForView(HOTSPOT_GROUP);
+};
+
+// 🚨【2026-10-07】手动刷新普通分组：对当前视图重新随机采样显示窗口 + 重置 30 秒轮换
+//   语义 = 「把当前正在看的分组重新随机一批」（不改变当前视图，不切到热点信息）
+//   复用 applyDisplayForView：它内部已含 computeDisplaySet（随机采样上限 60）
+//   + applyDisplaySet（增删到 editableLayers）+ restartRotation（重置轮换计时）。
+//   ⚠️ 传 '全部' 时 computeDisplaySet 会对全部图形采样，符合下拉「全部」的语义。
+// ===== [SECTION:handleRefreshGroup] =====
+const handleRefreshGroup = (view) => {
+  if (!editableLayers) return;
+  applyDisplayForView(view || currentView.value || '全部');
 };
 
 // 🚨 分组切换入口：改为走显示窗口（上限 60 + 轮换）
