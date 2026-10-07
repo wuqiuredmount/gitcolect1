@@ -129,6 +129,25 @@
 
 - 代码文件（src / 配置 / 脚本）→ write_file / edit_file → 强制审批（不绕）
 - 数据文件（public/ai-import、pending-unplaced）→ npm run data-ops → 免审批（用户已授权）
+- 记忆文件（仅 3 个，见下）→ npm run data-ops write → 免审批（用户已授权）
+
+### 记忆文件免审批（2026-10-07 追加，更严于数据文件）
+
+用户授权把 3 个记忆文件也纳入免审批，用于跨会话更新项目记忆。
+
+**白名单（精确匹配，无通配）**：
+- `.agents/PROJECT_MEMO.md`
+- `.agents/references/active-task.md`
+- `.agents/PROJECT_MEMO_ARCHIVE.md`
+
+**比数据文件更严的三条**：
+1. **仅允许 write** —— delete / list 一律拒绝（记忆文件不该被删）
+2. **精确匹配** —— 无目录通配，加新文件必须改脚本（改脚本要审批）
+3. **其余 `.agents/**` 一律拒绝** —— 含 architecture-map.md、red-lines.md 等
+
+**绝对禁止**：
+- 把记忆文件白名单扩成目录通配（如 `.agents/**`）—— 会连带放开规则文件
+- 用 data-ops 删除任何记忆文件（已硬拒）
 
 ---
 
