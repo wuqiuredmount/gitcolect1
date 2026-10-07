@@ -2,7 +2,7 @@
 
 > 用途：采集前先查本清单，**优先选低成本通道**。
 > 采集方式优先级：`API` < `fetch` < `浏览器`（成本从低到高）。
-> 最后更新：2026-10-07（O6 实测验证）
+> 最后更新：2026-10-07（E4 补录：发现 athletics.org.cn / cnmarathon.com）
 
 ---
 
@@ -64,13 +64,15 @@
 > - **规则：用「主体 + 年份」短查询，不要用长句子**
 | 百度 | `https://www.baidu.com/s?wd=` | 中文检索（含 AI 总结） | 浏览器 | ✅ 已验证（JS 渲染） |
 
-## 五、官方名录
+## 五、官方名录与资讯
 
 | 名称 | 地址 | 用途 | 采集方式 | 状态 |
 |---|---|---|---|---|
-| 中国田协官网 | `https://www.runchina.org.cn` | 官方赛历 | — | ❌ 本机不可达 |
+| **中国田径协会官网** | `https://www.athletics.org.cn` | 官方新闻/通知/竞赛 | **fetch** | ✅ 已验证（3353字） |
+| 中国马拉松资讯 | `https://cnmarathon.com` | 赛事资讯/定档消息 | **fetch** | ✅ 已验证（11364字） |
+| 中国田协（旧域） | `https://www.runchina.org.cn` | 官方赛历 | — | ⚠️ 首页 JS 渲染，fetch 空 |
+| 上马网 | `https://www.shang-ma.com` | 上海马拉松官方 | — | ⚠️ JS 应用，fetch 仅 3 字 |
 | 田协目录转载（澎湃） | `https://m.thepaper.cn` | 492场完整目录 | 待测 | ⏳ 待验证 |
-| 田协目录转载（新京报） | `https://www.bjnews.com.cn` | 492场完整目录 | 待测 | ⏳ 待验证 |
 
 ## 六、百科
 
@@ -88,7 +90,7 @@
 | 百度百科内嵌坐标 | 已不再输出 marker 坐标 |
 | Nominatim | 本机不可达 |
 | chinarun.com | 无法访问 |
-| runchina.org.cn | 无法访问 |
+| runchina.org.cn | 首页 JS 渲染，fetch 返回空（官网改用 athletics.org.cn） |
 | finance.sina.com.cn | 无法访问 |
 | chinamarathon.com `/events/{id}` | 详情页抓不到 |
 
