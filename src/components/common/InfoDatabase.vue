@@ -51,6 +51,7 @@
                 <th style="width: 100px;">统一编码</th>
                 <th style="width: 200px;">对象名称（文档名称）</th>
                 <th style="width: 100px;">图形类型</th>
+                <th style="width: 80px;">来源</th>
                 <th style="width: 80px;">操作</th>
               </tr>
             </thead>
@@ -61,11 +62,15 @@
                 <td>{{ item.objectName || item.title || '未命名' }}</td>
                 <td>{{ typeMap[item.type] || item.type }}</td>
                 <td>
+                  <span v-if="item.source === 'ai'" class="src-badge src-ai" title="AI 导入">🤖 AI</span>
+                  <span v-else class="src-badge src-manual" title="人工绘制">👤 人工</span>
+                </td>
+                <td>
                   <button class="del-btn" @click.stop="handleDelete(item)">删除</button>
                 </td>
               </tr>
               <tr v-if="filteredDataList.length === 0">
-                <td colspan="5" class="empty-row">暂无数据，请在画布上绘制图形</td>
+                <td colspan="6" class="empty-row">暂无数据，请在画布上绘制图形</td>
               </tr>
             </tbody>
           </table>

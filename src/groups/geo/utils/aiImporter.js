@@ -198,6 +198,10 @@ export const importAiBatch = async ({ toolId, fileId, batchData, onProgress }) =
       group: groupName,
       // 🚨 数据身份证：用于幂等去重
       fingerprint: fp,
+      // 🤖 数据来源标记（用于区分 AI 导入 vs 人工绘制）
+      //   人工绘制的图形不带此字段（undefined），UI 依此显示来源徽章
+      source: 'ai',
+      sourceAt: new Date().toISOString(),
       fields: emptyFields(),
       style: { ...markerStyle }
     });
