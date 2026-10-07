@@ -259,14 +259,31 @@ export async function bingSearch(query, limit = 10) {
   let html;
   if (c) html = c.data.html;
   else { html = (await fetchText(url, { useCache: false })).html; cacheSet('search', 'bing:' + query, { html }); }
-  const links = extractLinks(html, url).filter(l => !/(^|\.)bing\.com\//.test(l.url));
+  // 优先解析 h2 > a（Bing 结果的标题结构），带兜底
   const out = [];
   const seen = new Set();
-  for (const l of links) {
-    if (seen.has(l.url)) continue;
-    seen.add(l.url);
-    out.push(l);
+  const re = /<h2[^>]*>\s*<a[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    let u = m[1];
+    if (u.startsWith('//')) u = 'https:' + u;
+    if (!/^https?:\/\//.test(u)) continue;
+    if (/(^|\.)bing\.com\//.test(u)) continue;
+    if (seen.has(u)) continue;
+    seen.add(u);
+    const title = htmlToText(m[2]).replace(/\s+/g, ' ').trim().slice(0, 160);
+    out.push({ url: u, title });
     if (out.length >= limit) break;
+  }
+  // 兜底：h2 解析为空则退回通用链接提取
+  if (out.length === 0) {
+    const links = extractLinks(html, url).filter(l => !/(^|\.)bing\.com\//.test(l.url));
+    for (const l of links) {
+      if (seen.has(l.url)) continue;
+      seen.add(l.url);
+      out.push(l);
+      if (out.length >= limit) break;
+    }
   }
   return out;
 }

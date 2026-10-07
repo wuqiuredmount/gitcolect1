@@ -55,8 +55,13 @@
 
 | 名称 | 地址 | 用途 | 采集方式 | 状态 |
 |---|---|---|---|---|
-| Bing | `https://www.bing.com/search?q=` | 通用检索 | **fetch**（crawl 内置） | ✅ 已验证 |
-| DuckDuckGo | `https://html.duckduckgo.com/html/?q=` | 通用检索 | **fetch**（crawl 内置） | ✅ 已验证 |
+| Bing | `https://www.bing.com/search?q=` | 通用检索 | **fetch**（crawl 内置） | ✅ 已验证（见下注） |
+| DuckDuckGo | `https://html.duckduckgo.com/html/?q=` | 通用检索 | — | ❌ 本机 0 结果 |
+
+> **⚠️ Bing 查询用词（2026-10-07 实测）**：
+> - **长自然语言查询会语义漂移**：如「2026年12月全国马拉松赛事日程」→ 返回节假日/政府报告
+> - **短关键词查询精准**：如「上海马拉松 2026」→ 官网/详情页/新闻/百科全部命中
+> - **规则：用「主体 + 年份」短查询，不要用长句子**
 | 百度 | `https://www.baidu.com/s?wd=` | 中文检索（含 AI 总结） | 浏览器 | ✅ 已验证（JS 渲染） |
 
 ## 五、官方名录
