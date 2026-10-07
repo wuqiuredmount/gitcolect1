@@ -213,3 +213,4 @@ DeepSeek 写给 Cline 的指令建议包含：
 | `.agents/skills/项目上下文续接/SKILL.md` | DeepSeek 侧启动流程（含 mailbox 步骤） |
 | `.agents/PROJECT_MEMO.md` | 唯一权威记忆 |
 | `.agents/references/multi-ai-collab.md` | 多采集员并行协议（另一套，勿混淆） |
+| `.agents/references/cline-monitor.md` | Cline 监控机制（**磁盘事实核验，勿只信界面**） |

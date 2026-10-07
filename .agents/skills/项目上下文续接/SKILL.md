@@ -28,8 +28,9 @@ description: 当用户在本工作区（app100-multifunction 良件-空间信息
 4. 按 architecture-map §六「定位流程」定位到具体文件，**只读需要的局部**。
 5. 按 MEMO 第二节「协作硬性约定」执行任务。
 6. 任务涉及代码修改时，同时遵守 `.agents/skills/代码修改返还完整代码/SKILL.md`。
-7. **需要给 Cline 派活时** → 写 `.agents/mailbox/to-cline.md`（覆盖式，格式见协议文档）。
-8. 本轮对话结束前，更新 MEMO 的「四、数据现状」与「六、待办」；若发现新坑，补进「五」。
+7. **需要给 Cline 派活时** → 写 `.agents/mailbox/to-cline.md`（覆盖式，格式见协议文档）；**派活前先** `npm run watch-cline -- snapshot` 记基线。
+8. **Cline 汇报后** → 先 `npm run watch-cline -- diff` 核验**磁盘事实**（**勿只信界面**），再读 `to-deepseek.md`；异常处理见 `.agents/references/cline-monitor.md`。
+9. 本轮对话结束前，更新 MEMO 的「四、数据现状」与「六、待办」；若发现新坑，补进「五」。
 
 ## Token 分层（勿破坏）
 
