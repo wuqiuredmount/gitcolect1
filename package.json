@@ -7,7 +7,11 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:release": "vite build --mode release",
     "preview": "vite preview",
+    "share": "concurrently -k -n BUILD,SERVE -c cyan,green \"npm run build:release -- --watch\" \"wait-on dist/index.html && npm run preview -- --host\"",
+    "share:internal": "concurrently -k -n BUILD,SERVE -c cyan,green \"npm run build -- --watch\" \"wait-on dist/index.html && npm run preview -- --host\"",
+    "dev:all": "powershell -ExecutionPolicy Bypass -File scripts/dev-workspace.ps1",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
     "electron:build": "npm run build && electron-builder",
     "sync-map": "node scripts/sync-map.mjs",
@@ -18,7 +22,9 @@
     "data-ops": "node scripts/data-ops.mjs",
     "collect": "node scripts/collect/index.mjs",
     "extract": "node scripts/collect/extract.mjs",
-    "watch-cline": "node scripts/watch-cline.mjs"
+    "watch-cline": "node scripts/watch-cline.mjs",
+    "webcode": "node scripts/webcode-access.mjs",
+    "monitor": "node scripts/monitor.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.1",

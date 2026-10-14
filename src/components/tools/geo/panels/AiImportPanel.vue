@@ -87,6 +87,8 @@ import { ref, computed, onMounted } from 'vue';
 import MapPanel from './MapPanel.vue';
 import { importAiBatch } from '../../../../groups/geo/utils/aiImporter.js';
 import { getImportedFiles, markFilesImported, resetImportedFiles } from '../../../../groups/geo/utils/importHistory.js';
+import { getAllLayers } from '../../../../groups/geo/utils/annotationStore.js';
+import { resetFingerprintBackfillFlag } from '../../../../groups/geo/utils/fingerprintStore.js';
 import { cleanupDuplicates } from '../../../../groups/geo/utils/dedup.js';
 
 const props = defineProps({
@@ -210,17 +212,31 @@ const startImport = async () => {
   }
 };
 
-// 🚨 一键导入全部：只处理「待导入」文件，完成后归档并腾空清单
+// ==================== 渐进导入核心（2026-10-08 新增） ====================
+// 需求：打开工具时，若「待导入清单」有数据，自动渐进导入全部，防止卡顿。
+// 设计：
+//   1. 逐文件串行，每个文件后显式让出主线程（yieldToMain），界面保持可交互。
+//   2. runImportAllFiles 为无确认的核心逻辑，「手动」「自动」共用。
+//   3. maybeAutoImportAll 带「每工具每会话仅一次」守卫，防重复触发。
+
+// 🚨 让出主线程：setTimeout(0) 把后续逻辑排到下一个宏任务，
+//    浏览器得以在间隙处理渲染与用户输入，从而避免卡顿。
+const yieldToMain = () => new Promise(resolve => setTimeout(resolve, 0));
+
+// 🚨 自动导入守卫：记录本页面会话内已自动导入过的工具。
+//    用模块级 Set（而非 sessionStorage）——刷新页面后重置，失败可自动重试；
+//    同一会话内切换工具 / 组件重挂载则不会重复跑。
+const autoImportDone = new Set();
+
+// 🚨 一键导入全部（核心，无确认弹窗）：只处理「待导入」文件，完成后归档并腾空清单
 // 🆕 按「自然排序后的序号」依次导入（避免 batch-10 排在 batch-2 之前）。
 //   逐文件串行 + 指纹去重（importAiBatch 内部已做）⇒ 重复数据自动跳过。
-const startImportAll = async () => {
+const runImportAllFiles = async () => {
   const targets = [...sortedPendingFiles.value];
   if (!props.toolId || targets.length === 0) return;
-
-  const ok = window.confirm(
-    `即将依次导入 ${targets.length} 个文件。\n导入完成后，这些文件将移入「历史文件导入库」，待导入清单自动腾空。\n\n是否继续？`
-  );
-  if (!ok) return;
+  // 🚨 函数级重入保护：两个并发调用会在「指纹查询 → 指纹登记」之间产生竞态窗口，
+  //   双方都查不到对方尚未登记的指纹 ⇒ 同批数据被插入两次。
+  if (importing.value) return;
 
   importing.value = true;
   error.value = '';
@@ -234,6 +250,21 @@ const startImportAll = async () => {
   const succeeded = [];
   const failed = [];
 
+  // 🚨 认领策略（2026-10-08 二次修正）：改为「逐文件认领」。
+  //
+  //   历史演进：
+  //     ① 最初：全部导入完成后才写归档 ⇒ 中途刷新时归档为空 ⇒ 下次全量重跑
+  //        ⇒ 曾出现数据翻倍（5A 源 366 条，页面显示 732）。
+  //     ② 上一次修复：循环前「预认领全部」⇒ 防住了重复，但引入新缺陷 ——
+  //        认领已落盘而循环中途被打断（刷新 / 关闭 / HMR）时，未导入的文件
+  //        因已被认领而永久留在「已归档」里，pendingFiles 为空 ⇒ **永不补跑**
+  //        （实测：4173 归档 27 个文件，实际只导入 26 个，永久缺 20 条）。
+  //     ③ 现在：**每个文件导入成功后立即认领该文件**。
+  //        · 中途打断 ⇒ 未完成的文件未归档 ⇒ 下次启动自动补跑 ✅
+  //        · 重复风险 ⇒ 由 importAiBatch 的指纹去重（findExistingFingerprints）兜底，
+  //          已存在的条目会被计入 duplicated 跳过，不会产生重复数据 ✅
+  //        · 失败项本就未归档，无需再「回滚」✅
+
   for (const fname of targets) {
     try {
       batchInfo.value = `[${filesDone + 1}/${targets.length}] ${fname}`;
@@ -246,24 +277,26 @@ const startImportAll = async () => {
       totalImported += r.imported;
       totalDuplicated += (r.duplicated || 0);
       filesDone++;
-      succeeded.push(fname);   // 仅成功的才归档
+      succeeded.push(fname);
+      // 🚨 逐文件认领：导入成功即归档该文件，确保中断后剩余文件能被补跑。
+      await markFilesImported(props.toolId, [fname]);
       emit('imported', r);
     } catch (e) {
       failed.push(`${fname}: ${e.message || e}`);
     }
+    // 🚨 每个文件后让出主线程，防止连续导入造成界面卡顿
+    await yieldToMain();
   }
 
-  // 🚨 归档：把成功的文件记入历史库 → 待导入清单自动腾空
+  // 🚨 收尾：逐文件认领后，失败项**本就未被归档**，无需回滚。
+  //   （原「回滚」逻辑随预认领一起退役，避免多余的读-清-写往返。）
   let archived = false;
-  if (succeeded.length > 0) {
-    try {
-      await markFilesImported(props.toolId, succeeded);
-      await loadArchived();
-      archived = true;
-      emit('changed');
-    } catch (e) {
-      console.warn('[AiImportPanel] 归档失败:', e);
-    }
+  try {
+    await loadArchived();
+    archived = true;
+    emit('changed');
+  } catch (e) {
+    console.warn('[AiImportPanel] 归档收尾失败:', e);
   }
 
   allResult.value = {
@@ -275,6 +308,78 @@ const startImportAll = async () => {
   };
   if (failed.length) error.value = '部分文件失败：' + failed.join('；');
   importing.value = false;
+};
+
+// 🚨 一键导入全部（手动）：带二次确认，随后走同一套渐进逻辑
+const startImportAll = async () => {
+  const targets = [...sortedPendingFiles.value];
+  if (!props.toolId || targets.length === 0) return;
+
+  const ok = window.confirm(
+    `即将依次导入 ${targets.length} 个文件。\n导入完成后，这些文件将移入「历史文件导入库」，待导入清单自动腾空。\n\n是否继续？`
+  );
+  if (!ok) return;
+
+  await runImportAllFiles();
+};
+
+// 🚨 数据丢失自愈（2026-10-08 新增）：
+//   现象：归档记录说「N 个文件已导入」，但数据库里几乎没有对应数据
+//        （如热更新后 IndexedDB 被重置、5A 数据丢失）。
+//        此时 pendingFiles 为空（都被归档挡住），用户无法恢复数据。
+//   做法：对比「已归档文件数」与「数据库实际记录数」。若归档远大于数据，
+//        判定为「归档孤儿」→ 清空归档 + 重置指纹回填标志，让文件回到待导入清单。
+//   安全边界：仅在「数据库记录极少（< 归档文件数 × 5）」时才触发，
+//        正常场景（每文件数十条）绝不会误判。
+const healOrphanArchive = async () => {
+  if (!props.toolId) return false;
+  const archivedCount = archivedFiles.value.length;
+  if (archivedCount === 0) return false;
+
+  let layerCount = 0;
+  try {
+    const layers = await getAllLayers(props.toolId, null);
+    layerCount = Array.isArray(layers) ? layers.length : 0;
+  } catch (e) {
+    console.warn('[AiImportPanel] 读取数据失败，跳过错配检查:', e);
+    return false;
+  }
+
+  // 正常情况：每个文件至少含数条数据，总量应远大于文件数。
+  // 若数据量 < 归档文件数 × 5，判定为归档孤儿。
+  const threshold = archivedCount * 5;
+  if (layerCount >= threshold) return false;
+
+  console.warn(
+    `[AiImportPanel] 检测到归档孤儿：归档 ${archivedCount} 个文件，` +
+    `但数据库仅 ${layerCount} 条（阈值 ${threshold}）→ 重置归档以恢复导入能力`
+  );
+  try {
+    await resetImportedFiles(props.toolId);
+    await resetFingerprintBackfillFlag(props.toolId);
+    await loadArchived();
+    return true;
+  } catch (e) {
+    console.warn('[AiImportPanel] 归档自愈失败:', e);
+    return false;
+  }
+};
+
+// 🚨 自动导入（打开工具时触发）：无确认、渐进、每工具每会话仅一次
+const maybeAutoImportAll = async () => {
+  if (importing.value) return;                    // 已有导入在跑
+  if (!props.toolId) return;                      // 无工具 id
+  if (autoImportDone.has(props.toolId)) return;   // 本会话已自动导入过
+
+  // 🚨 先做数据丢失自愈：若归档与数据严重不符，重置归档使文件回到待导入清单
+  await healOrphanArchive();
+
+  if (pendingFiles.value.length === 0) return;    // 无待导入数据
+
+  autoImportDone.add(props.toolId);
+  console.log(`[AiImportPanel] 检测到 ${pendingFiles.value.length} 个待导入文件，开始自动渐进导入…`);
+  await runImportAllFiles();
+  console.log('[AiImportPanel] 自动导入结束。');
 };
 
 // 🚨 清理重复数据
@@ -317,7 +422,14 @@ const handleResetArchive = async () => {
   await loadArchived();
 };
 
-onMounted(() => { refreshAll(); });
+onMounted(async () => {
+  await refreshAll();
+  // 🚨 自动渐进导入（2026-10-08）：
+  //   先 await refreshAll() 拿到 manifest 与归档记录，再异步触发导入。
+  //   runImportAllFiles 内部逐文件 await + yieldToMain，首屏与交互不受阻塞。
+  //   不 await 此调用，避免阻塞面板挂载完成。
+  maybeAutoImportAll();
+});
 </script>
 
 <style scoped>

@@ -50,6 +50,14 @@
           <button class="inventory-btn" @click="isPendingOpen = true" title="待处理未放置信息库"> 📥 待处理未放置信息库</button>
           <button class="inventory-btn" @click="isDatabaseOpen = true" title="信息数据库"> 📊 信息数据库</button>
           <button class="settings-btn" @click="isSettingsOpen = true" title="设置"> ⚙️ 设置</button>
+          <!-- 🚨 2026-10-08：关闭工具按钮移到此处（原在工具头部），仅打开工具时显示 -->
+          <button
+            v-if="currentTool"
+            class="close-tool-btn"
+            @click="closeCurrentTool"
+            title="关闭工具"
+            aria-label="关闭工具"
+          >×</button>
           <button></button><button></button><button></button>
         </div>
       </div>
@@ -69,8 +77,9 @@
           <div id="tool-header-slot" class="header-slot"></div>
           
           <!-- 🚨 保存按钮已移动到这里 -->
-          <!-- 🖊️ 第三产品（白板）为独立功能区，无「工程文件」概念，内容自动本地保存，故禁用存档 -->
+          <!-- 💾 2026-10-08：纳入小工具开关控制；鹰眼/白板由 TOOL_WIDGET_DEFAULTS 默认关闭 -->
           <button 
+            v-if="showSaveProjectBtn"
             class="tool-save-btn" 
             :disabled="currentTool?.id === 'geo-eagle-eye' || currentTool?.id === 'wb-whiteboard'"
             :title="currentTool?.id === 'geo-eagle-eye' ? '鹰眼平台数据为实时自动保存，无需手动存档' : (currentTool?.id === 'wb-whiteboard' ? '白板内容自动本地保存，无需手动存档' : '保存当前工程到文件库存')"
@@ -78,8 +87,6 @@
           >
             💾 保存当前工程
           </button>
-
-          <button class="back-btn" @click="closeCurrentTool"> - 关闭工具</button>
         </div>
 
         <!-- 🚨 核心修复：把注释拿到外面，保证 <KeepAlive> 内部只有一个子组件 -->
@@ -286,14 +293,16 @@
       @open-recycle="isRecycleOpen = true"
     />
 
-    <!-- 📥 待处理未放置信息库弹窗 -->
+    <!-- 📥 待处理未放置信息库弹窗（对外发布模式下隐藏） -->
     <PendingUnplacedModal
+      v-if="INTERNAL_TOOLS"
       :visible="isPendingOpen"
       @close="isPendingOpen = false"
     />
 
-    <!-- 🗑️ 信息回收站弹窗 -->
+    <!-- 🗑️ 信息回收站弹窗（对外发布模式下隐藏） -->
     <RecycleBinModal
+      v-if="INTERNAL_TOOLS"
       :visible="isRecycleOpen"
       @close="isRecycleOpen = false"
       @changed="loadAllLayersFromDB"
@@ -332,6 +341,7 @@ import InfoDatabase from '../components/common/InfoDatabase.vue';
 import PendingUnplacedModal from '../components/common/PendingUnplacedModal.vue';
 import InventoryModal from '../components/common/InventoryModal.vue';
 import RecycleBinModal from '../components/common/RecycleBinModal.vue';
+import { INTERNAL_TOOLS } from '../featureFlags.js';
 
 import { globalToolSettings, ALL_WIDGETS, initToolSettings, globalDefaultStyles } from '../groups/geo/utils/toolSettings';
 import { MARKER_ICONS } from '../groups/geo/utils/markerIcons';
@@ -473,6 +483,16 @@ const findToolById = (toolId) => {
 // 🖊️ 全部工具（含白板），供信息数据库 / 小工具开关使用
 // ===== [SECTION:allToolsWithWhiteboard] =====
 const allToolsWithWhiteboard = computed(() => [...validTools.value, WHITEBOARD_TOOL]);
+
+// 💾 保存按钮显示判定（2026-10-08）：
+//   读取当前工具的小工具开关 saveProject；未初始化时默认不显示。
+//   鹰眼/白板在 TOOL_WIDGET_DEFAULTS 里默认 false，故首次进入不显示。
+// ===== [SECTION:showSaveProjectBtn] =====
+const showSaveProjectBtn = computed(() => {
+  const id = currentTool.value?.id;
+  if (!id) return false;
+  return globalToolSettings[id]?.saveProject === true;
+});
 
 groups.value.forEach(group => {
   group.tools.forEach(tool => {
@@ -956,6 +976,25 @@ const exportWordOnly = (proj) => {
 .window-controls button { background: transparent; border: 1px solid transparent; color: #6b7280; cursor: pointer; font-size: 13px; padding: 4px 12px; border-radius: 4px; transition: all 0.2s ease; white-space: nowrap; }
 .window-controls button:hover { background: #f3f4f6; color: #1f2937; }
 .settings-btn { border: 1px solid #e5e7eb !important; color: #1f2937 !important; font-size: 13px !important; }
+/* 🚨 2026-10-08：顶栏「关闭工具」× 按钮（替代原工具头部的「- 关闭工具」文字按钮） */
+.close-tool-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  color: #6b7280;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex: 0 0 auto;
+}
+.close-tool-btn:hover { background: #fff2f0; border-color: #ff4d4f; color: #ff4d4f; }
 .settings-btn:hover { background: #f9fafb !important; border-color: #d1d5db !important; }
 .inventory-btn { border: 1px solid #e5e7eb !important; color: #1f2937 !important; font-size: 13px !important; }
 .inventory-btn:hover { background: #f9fafb !important; border-color: #d1d5db !important; }
@@ -1077,4 +1116,143 @@ const exportWordOnly = (proj) => {
 /* 动画效果 */
 .fade-enter-active, .fade-leave-active { transition: opacity 0.3s ease, transform 0.3s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; transform: translateY(-10px); }
+
+/* ==================== 移动端适配（2026-10-08 新增） ==================== */
+/* 仅窄屏生效，桌面不受影响。断点：≤768 平板/大屏手机，≤480 手机 */
+
+@media (max-width: 768px) {
+  /* 🚨 顶栏重叠修复（2026-10-08）：
+     原为 flex 横向布局，两个子组换行后第二行不计入容器高度
+     （实测 scrollHeight 127 而渲染高度仅 73），导致内容溢出、与下方栏重叠。
+     改为块级布局：两个子组各占一行、高度自然累加，彻底消除重叠。 */
+  .title-bar {
+    display: block;
+    height: auto;
+    min-height: 44px;
+    padding: 6px 10px;
+    flex-shrink: 0;
+  }
+  .title-left-group {
+    display: flex;
+    flex-wrap: wrap;
+    width: 100%;
+    height: auto;
+    gap: 8px;
+  }
+  .title { font-size: 13px; }
+  .header-right-group {
+    display: flex;
+    flex-wrap: wrap;
+    width: 100%;
+    height: auto;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .current-group-btn { height: 32px; padding: 5px 10px; font-size: 12px; }
+
+  /* 顶栏右侧按钮：缩小内边距 */
+  .window-controls { gap: 4px; flex-wrap: wrap; }
+  .window-controls button { font-size: 12px; padding: 4px 8px; }
+  /* 移动端 × 按钮同步缩小 */
+  .close-tool-btn { width: 28px; height: 28px; font-size: 18px; padding: 0; }
+
+  /* 🚨 工具头部布局（2026-10-08 调整）：
+     需求：工具名独占第一行；其余控件（图形列表 / 全部筛选 / 定位查找 / 关闭工具…）
+           从第二行起自动换行，每行尽量填满；按钮文字不折断、不跨行。
+     做法：.active-tool-name 强制 100% 宽独占一行；.header-slot 允许收缩并换行，
+           内部控件各自不折行（white-space:nowrap），由 flex-wrap 自动排满每行。 */
+  .active-tool-header {
+    height: auto;
+    min-height: 44px;
+    padding: 6px 10px;
+    flex-wrap: wrap;
+    row-gap: 6px;
+    flex-shrink: 0;
+    align-items: center;
+  }
+  /* 工具名独占第一行 */
+  .active-tool-name {
+    flex: 0 0 100%;
+    width: 100%;
+    font-size: 13px;
+    margin-right: 0;
+    margin-bottom: 2px;
+  }
+  /* 其余控件容器：占满剩余宽度，内部自动换行 */
+  /* 🚨 关键修复：header-slot 里是 layer-list-dropdown(约417px) + 多个 inline 面板，
+     总宽 621px 超过手机屏宽 412px。flex 子项默认 min-width:auto 不允许收缩到
+     内容宽度以下 → 整条溢出，后面的面板被挤出屏幕（实测 x=427、543，点不到）。
+     加 min-width:0 允许收缩 + flex-wrap 允许换行，彻底解决溢出。 */
+  .header-slot {
+    flex: 1 1 100%;
+    min-width: 0;
+    flex-wrap: wrap;
+    row-gap: 6px;
+    column-gap: 6px;
+    justify-content: flex-start;
+    align-content: flex-start;
+  }
+  /* 按钮文字不折断、不跨行 */
+  .header-slot button,
+  .header-slot .dropdown-toggle-btn,
+  .header-slot .group-btn {
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+  .tool-save-btn { padding: 5px 10px; font-size: 12px; margin-right: 8px; white-space: nowrap; }
+  .back-btn { padding: 5px 10px; font-size: 12px; margin-left: 0; white-space: nowrap; flex: 0 0 auto; }
+
+  /* 关于我们弹层：贴合屏宽 */
+  .about-content-box {
+    width: 90vw;
+    max-width: none;
+    padding: 14px 16px;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  /* 工具组下拉：防超宽 */
+  .tool-dropdown-menu { min-width: 200px; max-width: 80vw; }
+
+  /* 启动页卡片：竖排 */
+  .launcher-title { font-size: 20px; }
+  .launcher-actions { flex-direction: column; gap: 16px; width: 80%; }
+  .launcher-card { width: 100%; padding: 20px 16px; }
+
+  /* 弹窗：接近全屏 */
+  .modal-overlay { padding: 10px; }
+  .settings-modal { width: 100%; max-width: 100%; max-height: 92vh; }
+  .tool-selection-modal { width: 100%; max-width: 92vw; }
+
+  /* 设置网格：收窄列数 */
+  .widget-switches-grid { grid-template-columns: 1fr 1fr; }
+  .default-styles-container { grid-template-columns: 1fr; }
+  .style-config-card:last-child { grid-column: span 1; }
+  .default-icon-grid { grid-template-columns: repeat(6, 1fr); }
+
+  /* 路径显示：允许收缩 */
+  .setting-control { flex-wrap: wrap; }
+  .path-display { min-width: 0; }
+
+  /* 移动端用 dvh，规避浏览器地址栏导致的高度跳动 */
+  .app-container { height: 100vh; height: 100dvh; }
+  .modal-overlay { height: 100vh; height: 100dvh; }
+}
+
+@media (max-width: 480px) {
+  /* 更小屏：进一步压缩 */
+  .title { font-size: 12px; max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .window-controls button { padding: 4px 6px; font-size: 11px; }
+
+  .active-tool-name { font-size: 12px; }
+  .tool-save-btn { font-size: 11px; padding: 4px 8px; }
+  .back-btn { font-size: 11px; padding: 4px 8px; }
+
+  .about-content-box { width: 94vw; font-size: 12px; }
+
+  .widget-switches-grid { grid-template-columns: 1fr; }
+  .default-icon-grid { grid-template-columns: repeat(5, 1fr); }
+  .default-icon-item { width: 28px; height: 28px; }
+}
 </style>

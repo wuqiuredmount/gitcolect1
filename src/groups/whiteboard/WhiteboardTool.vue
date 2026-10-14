@@ -21,14 +21,9 @@
            ⚠️ 不直接调 boardRef.getApi().scrollToContent —— 空场景/软删除过滤/异常兜底
               都收在 ExcalidrawBoard.centerToContent 里，外部只处理「成没成」。 -->
       <button class="wb-btn" @click="handleBackToCenter">回到中心点</button>
-      <!-- 🧪【临时调试，2026-10-07】清理「幽灵元素」：见 handleCleanGhostElements 注释。
-           ⚠️ 排查结束后必须整块删除（含下方 handler / 导入 / 样式）。 -->
-      <button class="wb-btn wb-btn-danger" @click="handleCleanGhostElements" :disabled="ghostCleaning">
-        {{ ghostCleaning ? '清理中…' : '[临时调试] 清理幽灵元素' }}
-      </button>
       <button class="wb-btn" @click="syncNow" :disabled="syncing">{{ syncing ? '同步中…' : '立即同步' }}</button>
-      <!-- 🤖【P1-A】AI 批量导入开关（面板内联在画布左上角） -->
-      <button class="wb-btn" :class="{ 'wb-btn-primary': showAiImportPanel }" @click="showAiImportPanel = !showAiImportPanel">
+      <!-- 🤖【P1-A】AI 批量导入开关（面板内联在画布左上角）；对外发布模式隐藏 -->
+      <button v-if="INTERNAL_TOOLS" class="wb-btn" :class="{ 'wb-btn-primary': showAiImportPanel }" @click="showAiImportPanel = !showAiImportPanel">
         {{ showAiImportPanel ? '收起AI导入' : 'AI批量导入' }}
       </button>
       <button class="wb-btn" @click="isGeoPanelOpen = !isGeoPanelOpen">
@@ -95,7 +90,7 @@
              ℹ️ toolId 用白板自己的 WB_TOOL_ID ⇒ 导入的记录直接落进白板的信息库，
                 与地图元素共用同一套 annotations/documents 表，但 toolId 隔离互不干扰。 -->
         <AiImportPanel
-          v-if="showAiImportPanel && boardReady"
+          v-if="INTERNAL_TOOLS && showAiImportPanel && boardReady"
           inline
           :tool-id="WB_TOOL_ID"
           :file-id="safeFileId()"
@@ -181,14 +176,12 @@ import { ensureDefaultBoard, saveBoard, getBoard, WB_LEGACY_BOARD_ID } from './u
 // ✅ 合并导入：filterBrokenElements 与 WB_TOOL_ID 等同源自 elementSync.js
 import { WB_TOOL_ID, syncScene, rebuildIdMap, getRegisteredElements, ElementIdMap,
          filterBrokenElements } from './utils/elementSync.js';
-// 🧪【临时调试，2026-10-07】清理幽灵元素用：读白板记录 + 图表 + 回收站读写。
-//   ⚠️ 排查结束后与 handleCleanGhostElements 一起删除。
-import { getAllLayers } from '../geo/utils/annotationStore.js';
-import { getAllRecycled, purgeFromRecycleBin } from '../geo/utils/recycleStore.js';
 import { WHITEBOARD_DEFAULTS } from '../geo/utils/toolDefaults.js';
 import { isValidBounds, isValidCanvas } from './utils/coordinate.js';
 // 🧩 块 3：白板 P0 面板（图形列表 → 顶栏；信息栏 → 画布左下角浮层）
 import WhiteboardPanels from './WhiteboardPanels.vue';
+// 🚨 构建期开关：对外发布模式隐藏内部工具（AI导入 / 回收站 / 待放置）
+import { INTERNAL_TOOLS } from '../../featureFlags.js';
 // 🤖【P1-A】AI 批量导入面板：懒加载（与 AsyncExcalidrawBoard 同理，
 //   面板依赖 MapPanel/图表等一堆东西，没必要进首屏）。
 // ===== [SECTION:AiImportPanel] =====
@@ -1031,156 +1024,6 @@ const handleWbDeleteElement = (item) => {
   console.debug('[白板面板] 已标记删除（等待 runSync 归档进回收站）:', wbElementId);
 };
 
-// 🧪【临时调试，2026-10-07】清理幽灵元素：按钮 loading 态
-// ===== [SECTION:ghostCleaning] =====
-const ghostCleaning = ref(false);
-
-/**
- * 🧪【临时调试工具】清理「幽灵元素」+ 「回收站残留记录」（2026-10-07）
- *
- * 【要解决的现象】三处失去统一（用户实测）：
- *   board.scene = 6 个 / annotations = 6 条 / recyclebin = 2 条
- *   → 那 2 条回收站记录（WB.00036 / WB.00037）对应的元素**还活着**（在 scene 与 annotations 里）
- *     → 病征是「**元素活着、回收站还有记录**」（二次删除残留），
- *       而不是「scene 有、annotations 无」。
- *
- * 【为什么用「物理移除」而不是打 isDeleted】
- *   常规删除路径（唯一入口 runSync）之所以只打标记，是为了让 rawById 能取到
- *   完整原始元素、随回收站留档（wbElementRaw），供恢复时精确还原。
- *   但本工具是**清理已确认的脏数据**、明确不要恢复 → 不需要留档，
- *   物理移除更彻底：一步到位，不会在下一次同步里再次被判定/复活。
- *
- * 【两件事必须解耦】（DeepSeek 第 16 轮裁决 · bug 1）
- *   ① scene 幽灵判据：只决定「要不要动 board.scene」
- *   ② 回收站残留清理：**无条件执行**，与 ① 的结果无关
- *   ⚠️ 旧版 `if (ghosts.length === 0) return;` 会让 ② 永远执行不到。
- *
- * 【判据统一用 wbElementId 桥接】（DeepSeek 第 16 轮裁决 · 不可再用 annotationId）
- *   scene[].id 是 Excalidraw nanoid；recyclebin.annotationId 是 WB.xxx → 不同源。
- *   活性判据 = `record.layer.wbElementId ∈ sceneIds`：
- *     · 在 scene → 元素活着 → 该记录是残留 → 清
- *     · 不在 scene → 真·已删 → 回收站是恢复唯一凭据 → **保留**
- *
- * 【为什么先写 board.scene、再调 refreshDataFromDB】
- *   refreshDataFromDB 会 getBoard() 重新读库并 setScene 刷回画布。
- *   若先刷后写，画布上仍是 6 个 → 下一次 onChange 又把这 2 个当活元素。
- *   ⚠️ 注意：本函数**不碰 annotations**（幽灵本就不在其中），
- *      故不存在「物理移除 → runSync 集合差 → 二次写回收站」的链
- *      （该链只对 idMap 里已登记的 id 成立）。
- *
- * ⚠️ 排查结束后整块删除（含按钮 / 导入 / 样式）。
- */
-// ===== [SECTION:handleCleanGhostElements] =====
-const handleCleanGhostElements = async () => {
-  if (ghostCleaning.value) return;
-  ghostCleaning.value = true;
-  try {
-    // ---------- 1. 取当前画布场景（权威数据：以画布为准）----------
-    if (!canvasReady.value || !boardRef.value?.getScene) {
-      console.warn('[临时调试] 画布未就绪，已中止');
-      return;
-    }
-    const snap = boardRef.value.getScene();
-    const scene = Array.isArray(snap && snap.scene) ? snap.scene.slice() : [];
-
-    // ---------- 2. 取 annotations 的 id / wbElementId 集合 ----------
-    const layers = await getAllLayers(WB_TOOL_ID, safeFileId()) || [];
-    const knownIds = new Set();
-    layers.forEach(l => {
-      if (l && l.id) knownIds.add(l.id);
-      if (l && l.wbElementId) knownIds.add(l.wbElementId);
-    });
-
-    // ---------- 3. 找出「幽灵」：在 scene 里、但 annotations 里查无此 id ----------
-    //   ⚠️ 同时排除 isDeleted=true 的：那些是「正常删除但未落库」的残留，
-    //      属另一类问题（由下次 runSync 归档），本工具不越界处理。
-    const ghosts = scene.filter(e => e && e.id && !e.isDeleted && !knownIds.has(e.id));
-    const ghostIdSet = new Set(ghosts.map(e => e.id));
-
-    console.log('[临时调试] 幽灵元素扫描：scene 共', scene.length,
-      '| annotations 共', layers.length, '| 幽灵', ghosts.length);
-    ghosts.forEach(e => console.log('   🧟 幽灵:', e.id, '| type=' + e.type,
-      '| x=' + Math.round(e.x) + ' y=' + Math.round(e.y)));
-
-    // ---------- 4. 物理移除（无幽灵时保持原数组，仍继续走后面的清理）----------
-    //   🐛【bug 1 修复，2026-10-07】旧版在此处 `if (ghosts.length === 0) return;`
-    //      → 直接把后面的 clearRecycleBin 短路掉，「清回收站」永远执行不到。
-    //      现在两件事**解耦**：幽灵判据只决定「要不要动 scene」，清回收站无条件执行。
-    //   ⚠️ 若幽灵为 0，则**不写 board.scene**：避免用一份等价快照去覆盖库，
-    //      白白刷新 saveBoard.updatedAt（减少与 onBeforeUnmount 的竞争面）。
-    const hasGhost = ghosts.length > 0;
-    const nextScene = hasGhost ? scene.filter(e => !(e && ghostIdSet.has(e.id))) : scene;
-
-    // ---------- 5. 写回白板记录（权威写，先落库，避免被后续 setScene 覆盖）----------
-    if (hasGhost) {
-      saving = true;
-      try {
-        // 🛡️【缺陷 2 修复（2026-10-07）】改用权威写 helper（不传 baseUpdatedAt → 强制生效），
-        //   并纳入 saving 互斥 —— 避免与 onBeforeUnmount 的乐观写并发。
-        //   ⚠️ helper 会先 getBoard() 取完整记录再覆写，避免本函数只传 scene 时
-        //      把 appState 写成空对象。
-        const res = await persistBoardAuthoritative(nextScene);
-        if (!res || !res.saved) {
-          console.warn('[临时调试] 权威回写未成功:', res && res.reason);
-        }
-      } finally {
-        saving = false;
-      }
-    }
-
-    // ---------- 6. 清「残留」回收站记录（与幽灵判据解耦，无条件执行）----------
-    //   🎯【判据统一用 wbElementId 桥接】（DeepSeek 第 16 轮裁决）
-    //     scene[].id 是 Excalidraw nanoid；recyclebin.annotationId 是 WB.xxx
-    //     → 两者**不同源**，直接比对恒不匹配。
-    //     唯一正确的活性判据：record.layer.wbElementId ∈ sceneIds
-    //       · 在 scene 里 → 元素还活着 → 该回收站记录是「二次删除残留」→ 可清
-    //       · 不在 scene 里 → 真·已删 → 回收站是恢复的唯一凭据 → **必须保留**
-    //   ⚠️ 用重建的 scene 判定（即物理移除后的结果）：被移掉的元素若在回收站有记录，
-    //      也会被正确判为「已不在 scene」而保留。
-    const sceneIds = new Set(nextScene.filter(e => e && e.id).map(e => e.id));
-    let records = [];
-    try {
-      records = await getAllRecycled(WB_TOOL_ID) || [];
-    } catch (e) {
-      console.warn('[临时调试] 读取 WB 回收站失败，跳过清理:', e);
-    }
-    const stale = [];
-    const kept = [];
-    records.forEach(r => {
-      const wbId = r && r.layer ? r.layer.wbElementId : null;
-      if (wbId && sceneIds.has(wbId)) stale.push(r);   // 元素活着 → 残留
-      else kept.push(r);                                // 真已删 / 无桥接id → 保留
-    });
-
-    console.log('[临时调试] 回收站扫描：共', records.length,
-      '条 | 残留可清', stale.length, '条 | 保留', kept.length, '条');
-    stale.forEach(r => console.log('   🧹 残留记录:', r.annotationId,
-      '| 元素仍在 scene（' + ((r.layer || {}).wbElementId || '') + '）'));
-    kept.forEach(r => console.log('   🔒 保留记录:', r.annotationId,
-      '| 元素已不在 scene（' + ((r.layer || {}).wbElementId || '无桥接id') + '）'));
-
-    // ⚠️ purgeFromRecycleBin 的签名是 (toolId, fileId, annotationId)，
-    //   不是传记录对象 —— 逐条按记录自身的 fileId 清（兼容历史 fileId 差异）。
-    for (const r of stale) {
-      try {
-        await purgeFromRecycleBin(WB_TOOL_ID, r.fileId || safeFileId(), r.annotationId);
-      } catch (e) {
-        console.warn('[临时调试] 清除残留记录失败:', r.annotationId, e);
-      }
-    }
-
-    // ---------- 7. 刷新：重读库 + 重建 idMap + setScene 刷回画布 ----------
-    await refreshDataFromDB();
-
-    console.log('[临时调试] ✅ 清理完成：物理移除', ghosts.length, '个幽灵元素，清掉',
-      stale.length, '条回收站残留记录（保留', kept.length, '条真·已删记录）');
-  } catch (e) {
-    console.error('[临时调试] 清理幽灵元素失败:', e);
-  } finally {
-    ghostCleaning.value = false;
-  }
-};
-
 /**
  * 列表「改组」→ 分组双写（customData 镜像 + 画布刷新）
  *
@@ -1710,10 +1553,6 @@ defineExpose({
 .wb-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .wb-btn-primary { background: #1890ff; border-color: #1890ff; color: #fff; }
 .wb-btn-primary:hover:not(:disabled) { background: #096dd9; border-color: #096dd9; color: #fff; }
-/* 🧪【临时调试，2026-10-07】清理幽灵元素按钮（排查结束后随按钮一起删除） */
-.wb-btn-danger { background: #fff2f0; border-color: #ff4d4f; color: #cf1322; }
-.wb-btn-danger:hover:not(:disabled) { background: #ff4d4f; border-color: #ff4d4f; color: #fff; }
-
 /* ---------- 主体 ---------- */
 .wb-body { display: flex; flex: 1; min-height: 0; }
 .wb-canvas-wrap { flex: 1; min-width: 0; height: 100%; position: relative; background: #fff; }
@@ -1795,5 +1634,39 @@ defineExpose({
   word-break: break-word;
 }
 .wb-doc-body img { max-width: 100%; height: auto; }
-</style>
 
+/* ==================== 移动端适配（2026-10-08 新增） ==================== */
+/* 仅窄屏生效，桌面不受影响。 */
+@media (max-width: 768px) {
+  /* 顶部状态/按钮条：允许换行，按钮缩小 */
+  .wb-status-bar { flex-wrap: wrap; row-gap: 6px; height: auto; padding: 6px 8px; }
+  .wb-badge { font-size: 11px; }
+  .wb-btn { font-size: 11px; padding: 4px 8px; }
+
+  /* 右侧地理范围面板：改为覆盖式抽屉，避免挤压画布 */
+  .wb-geo-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(300px, 86vw);
+    z-index: 1200;
+    box-shadow: -4px 0 16px rgba(0, 0, 0, 0.15);
+    padding: 10px;
+  }
+
+  /* 元素列表与文档预览：降低最大高度 */
+  .wb-element-list { max-height: 40vh; }
+  .wb-doc-body { max-height: 40vh; }
+
+  /* 地理范围面板输入框：宽度自适应 */
+  .wb-geo-panel input { width: 100%; max-width: 140px; }
+}
+
+@media (max-width: 480px) {
+  .wb-status-bar { padding: 4px 6px; row-gap: 4px; }
+  .wb-badge { font-size: 10px; }
+  .wb-btn { font-size: 10px; padding: 3px 6px; }
+  .wb-geo-panel { width: 92vw; }
+}
+</style>

@@ -105,6 +105,17 @@ export const registerFingerprints = async (toolId, entries) => {
     await putManyToToolDB(toolId, STORE, records);
   } catch (e) {
     console.warn('[fingerprintStore] 指纹登记失败:', e);
+    // 🚨 关键修复（2026-10-08）：登记失败时重置回填标志。
+    //   原因：ensureFingerprintsReady 靠 BACKFILL_FLAG 短路，一旦置位就不再回填。
+    //   若首次导入时登记失败（异常被本 catch 吞掉），标志却已置位 →
+    //   后续导入查询不到指纹 → 已存在的数据被当作新数据再次写入 → 重复。
+    //   实测：5A 源文件 366 条，页面显示 732（正好 2 倍）。
+    //   重置标志后，下次导入前会重新从 annotations 回填指纹，恢复去重能力。
+    try {
+      await putToToolDB(toolId, 'meta', { key: BACKFILL_FLAG, value: false, at: Date.now() });
+    } catch (e2) {
+      console.warn('[fingerprintStore] 重置回填标志失败:', e2);
+    }
   }
 };
 

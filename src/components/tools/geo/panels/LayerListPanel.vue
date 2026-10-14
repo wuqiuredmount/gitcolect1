@@ -532,4 +532,18 @@ const goToFavorite = (item) => {
 .go-here-btn:hover { background: #40a9ff; }
 .fav-empty { text-align: center; padding: 30px 10px; color: #999; font-size: 12px; }
 .fav-empty .hint { font-size: 10px; color: #bbb; margin-top: 5px; }
+
+/* ==================== 移动端适配（2026-10-08 新增） ==================== */
+/* 仅窄屏生效，桌面不受影响。放末尾以确保覆盖前面同优先级规则。 */
+@media (max-width: 768px) {
+  /* 操作栏换行，避免单行 400+px 溢出手机屏 */
+  .top-actions { flex-wrap: wrap; row-gap: 5px; }
+  /* 下拉框收窄，给其他控件让位 */
+  .group-filter-select { max-width: 110px; }
+  /* 按钮缩小 */
+  .dropdown-toggle-btn, .group-btn { padding: 4px 8px; font-size: 12px; }
+  .group-btn .btn-text { display: none; } /* 手机只留图标，省空间 */
+  /* 展开面板贴合屏宽 */
+  .dropdown-panel { max-width: calc(100vw - 20px); }
+}
 </style>

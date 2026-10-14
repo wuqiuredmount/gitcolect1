@@ -32,6 +32,18 @@
               <div class="group-name">Excalidraw 白板 + 数据信息</div>
               <div class="group-desc">白板协作与数据信息整理空间</div>
             </div>
+            <!-- 🆕 第四产品入口（占位，功能待开发） -->
+            <div class="group-card" @click="showComingSoon('幻想世界空间构建开放平台')">
+              <div class="group-icon">🌌</div>
+              <div class="group-name">幻想世界空间构建开放平台</div>
+              <div class="group-desc">构建与共享你的想象空间</div>
+            </div>
+            <!-- 🆕 第五产品入口（占位，功能待开发） -->
+            <div class="group-card" @click="showComingSoon('鹰眼AI')">
+              <div class="group-icon">🤖</div>
+              <div class="group-name">鹰眼AI</div>
+              <div class="group-desc">AI 驱动的空间信息智能助手</div>
+            </div>
           </div>
         </div>
       </div>
@@ -160,6 +172,13 @@ const router = useRouter();
 // 🚨 接收 groupId 参数
 const goToGisApp = (groupId) => {
   router.push(`/gis/${groupId}`);
+};
+
+// 🆕 占位入口提示（2026-10-08）：
+//   第四/第五产品入口尚未开发，点击仅提示，不做路由跳转，避免跳到空路由白屏。
+//   待后续开发时，把 @click 换回 goToGisApp('<groupId>') 即可。
+const showComingSoon = (name) => {
+  window.alert(`「${name}」功能开发中，敬请期待。`);
 };
 </script>
 

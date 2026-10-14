@@ -145,6 +145,7 @@ import OpacityPanel from './panels/OpacityPanel.vue';
 import InfoPanel from './panels/InfoPanel.vue';
 import MarkerDocPanel from './panels/MarkerDocPanel.vue';
 import AiImportPanel from './panels/AiImportPanel.vue';
+import { INTERNAL_TOOLS } from '../../../featureFlags.js';
 import { importAiBatch } from '../../../groups/geo/utils/aiImporter.js';
 import { runChunked, sampleRandom, GROUP_DISPLAY_MAX, ROTATE_INTERVAL_MS, CHUNK_SIZE } from '../../../groups/geo/utils/layerScheduler.js';
 
@@ -176,6 +177,8 @@ const finalVisibleTools = computed(() => {
 // 否则回退到合并后的全局设置（默认 false）。
 // ===== [SECTION:showAiImportPanel] =====
 const showAiImportPanel = computed(() => {
+  // 🚨 对外发布模式（build:release）统一关闭内部工具，开发/自用不受影响。
+  if (!INTERNAL_TOOLS) return false;
   const raw = props.config.visibleTools?.aiImportPanel;
   if (raw !== undefined) return raw;
   return finalVisibleTools.value.aiImportPanel === true;
@@ -690,7 +693,18 @@ const loadHistoricalLayers = async () => {
   // 🚨 应用显示窗口：鹰眼默认看热点，其它工具默认看全部
   if (props.config.toolId === 'geo-eagle-eye') {
     loadHotspotIds();
-    if (hotspotIds.value.length === 0 && drawnLayers.value.length > 0) {
+    // 🚨 2026-10-08 修复：热点数量补满。
+    //   原逻辑只在「空」时重建 → 首次存下少量记录后永不更新。
+    //   前版曾用「低于 50% 才重建」，但自动导入过程中会多次刷新：
+    //   第一次刷新数据不全（如仅 60 条）即建成 32 条，
+    //   后续数据涨到 146 时 32 > 49×0.5，判定为「不陈旧」→ 卡在 32。
+    //   现改为：只要当前热点数 < 可达上限 min(HOTSPOT_MAX, total)，就重建。
+    //   重建为 O(n)，n 为图形数；数据不再增长后即稳定（49 = 49 不重建）。
+    const total = drawnLayers.value.length;
+    const expected = Math.min(HOTSPOT_MAX, total);
+    const stale = hotspotIds.value.length === 0 ||
+                  hotspotIds.value.length < expected;
+    if (stale && total > 0) {
       saveHotspotIds(buildHotspotIds());
     }
     applyDisplayForView(HOTSPOT_GROUP);
@@ -857,7 +871,11 @@ const saveHotspotIds = (ids) => {
   try { localStorage.setItem(HOTSPOT_KEY, JSON.stringify(hotspotIds.value)); } catch (e) { /* 忽略配额错误 */ }
 };
 
-// 生成热点：遍历每个分组，随机抽取 2-3 个，累计不超过 HOTSPOT_MAX
+// 生成热点：两轮抽样，最终填满至 HOTSPOT_MAX
+// 🚨 2026-10-08 修复：原实现「每分组抽 2-3 个」在分组较少时数量严重偏少
+//   （实测只有 1 个分组时仅得 2 条）。改为两轮：
+//     第一轮：每分组抽 2-3 个，保证跨分组多样性；
+//     第二轮：若未达上限，从所有剩余项随机补满，确保数量最大化。
 // ===== [SECTION:buildHotspotIds] =====
 const buildHotspotIds = () => {
   const byGroup = {};
@@ -869,6 +887,8 @@ const buildHotspotIds = () => {
 
   const picked = [];
   const seen = new Set();
+
+  // 第一轮：每分组 2-3 个（多样性）
   Object.keys(byGroup).forEach(g => {
     if (picked.length >= HOTSPOT_MAX) return;
     const pool = byGroup[g].slice();
@@ -882,6 +902,22 @@ const buildHotspotIds = () => {
       }
     }
   });
+
+  // 第二轮：不足则从剩余项随机补满（部分洗牌，O(n)）
+  if (picked.length < HOTSPOT_MAX) {
+    const rest = [];
+    drawnLayers.value.forEach(item => {
+      if (item && item.id && !seen.has(item.id)) rest.push(item.id);
+    });
+    const need = Math.min(HOTSPOT_MAX - picked.length, rest.length);
+    for (let i = 0; i < need; i++) {
+      const idx = Math.floor(Math.random() * rest.length);
+      picked.push(rest[idx]);
+      rest[idx] = rest[rest.length - 1];
+      rest.pop();
+    }
+  }
+
   return picked;
 };
 
@@ -1777,4 +1813,33 @@ defineExpose({
 .context-menu-item:hover { background: #f3f4f6; }
 .context-menu-item.delete-item { color: #ef4444; }
 .context-menu-item.delete-item:hover { background: #fee2e2; }
+
+/* ==================== 移动端适配（2026-10-08 新增） ==================== */
+/* 仅窄屏生效，桌面不受影响。 */
+@media (max-width: 768px) {
+  /* 缩放控件：缩小并贴近边缘，少占屏 */
+  .custom-zoom-control { top: 8px; left: 8px; }
+  .custom-zoom-control button { width: 26px; height: 26px; font-size: 16px; }
+
+  /* 底部工具条：缩小内边距与间距 */
+  .custom-bottom-toolbar { bottom: 8px; left: 8px; gap: 4px; padding: 4px; }
+
+  /* 左侧绘图工具条：整体上移，避免与缩放控件/底栏挤在一起 */
+  .custom-toolbar { top: 46px; left: 8px; padding: 3px; gap: 3px; }
+  .custom-toolbar button { width: 28px; height: 28px; font-size: 13px; }
+
+  /* 缩放百分比滑块：略收窄 */
+  .zoom-percent-slider { width: 60px; }
+
+  /* 上传/欢迎框：贴合屏宽 */
+  .upload-box { padding: 24px 18px; width: 90vw; max-width: 420px; }
+  .upload-box h2 { font-size: 18px; }
+  .upload-actions { flex-wrap: wrap; }
+}
+
+@media (max-width: 480px) {
+  .custom-zoom-control button { width: 24px; height: 24px; }
+  .custom-toolbar button { width: 26px; height: 26px; }
+  .upload-box { padding: 20px 14px; }
+}
 </style>

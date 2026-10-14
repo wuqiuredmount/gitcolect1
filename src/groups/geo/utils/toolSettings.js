@@ -15,8 +15,21 @@ export const ALL_WIDGETS = [
   { key: 'resetCenter', name: '回到底图中心点', default: true },
   { key: 'zoomPercent', name: '缩放倍数 (20%-5000%)', default: true },
   // 🚨 AI 批量导入面板（默认关闭，需在设置里按工具开启）
-  { key: 'aiImportPanel', name: 'AI批量导入', default: false }
+  { key: 'aiImportPanel', name: 'AI批量导入', default: false },
+  // 💾 保存当前工程按钮（2026-10-08 新增）：纳入小工具开关控制
+  //   默认 true（桌面各工具显示）；鹰眼/白板由 TOOL_WIDGET_DEFAULTS 置为 false
+  { key: 'saveProject', name: '保存当前工程', default: true }
 ];
+
+// 🚨 工具级小工具默认值（2026-10-08 新增）：
+//   优先级高于「窄屏默认」与「widget.default」，用于按工具定制初始状态。
+//   仅影响「首次初始化」（localStorage 无记录时）。
+const TOOL_WIDGET_DEFAULTS = {
+  // 鹰眼数据实时自动保存，无「工程文件」概念 → 默认不显示保存按钮
+  'geo-eagle-eye': { saveProject: false },
+  // 白板内容自动本地保存，无存档概念 → 默认不显示
+  'wb-whiteboard': { saveProject: false }
+};
 
 const STORAGE_KEY = 'liangjian_tool_widget_settings';
 const savedSettings = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
@@ -27,16 +40,48 @@ watch(globalToolSettings, (newVal) => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(newVal));
 }, { deep: true });
 
+// 🚨 窄屏（手机）精简默认值（2026-10-08）：
+//   桌面默认全开没问题，但手机上全开会把顶栏挤满、控件重叠。
+//   故窄屏首次访问时，默认只开这几项；用户之后可自行在设置里改（改动立即生效并持久化）。
+//   注意：仅影响「首次初始化」（localStorage 无记录时），已有记录不会被覆盖。
+const NARROW_DEFAULTS = {
+  zoomControl: false,
+  drawToolbar: true,
+  markerDocPanel: true,
+  locatingPanel: true,
+  infoPanel: false,
+  layerListPanel: true,
+  opacityPanel: false,
+  resetCenter: false,
+  zoomPercent: false,
+  aiImportPanel: false
+};
+
+const isNarrowScreen = () =>
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(max-width: 768px)').matches;
+
 export const initToolSettings = (toolId, defaultVisibleTools = {}) => {
   if (!globalToolSettings[toolId]) {
     globalToolSettings[toolId] = {};
   }
+  const narrow = isNarrowScreen();
+  const toolDefaults = TOOL_WIDGET_DEFAULTS[toolId] || {};
   ALL_WIDGETS.forEach(widget => {
     if (globalToolSettings[toolId][widget.key] === undefined) {
-      globalToolSettings[toolId][widget.key] =
-        defaultVisibleTools[widget.key] !== undefined
-          ? defaultVisibleTools[widget.key]
-          : widget.default;
+      let fallback = widget.default;
+      // 优先级：工具级默认 > 传入的 defaultVisibleTools > 窄屏默认 > widget 默认
+      if (narrow && NARROW_DEFAULTS[widget.key] !== undefined) {
+        fallback = NARROW_DEFAULTS[widget.key];
+      }
+      if (defaultVisibleTools[widget.key] !== undefined) {
+        fallback = defaultVisibleTools[widget.key];
+      }
+      if (toolDefaults[widget.key] !== undefined) {
+        fallback = toolDefaults[widget.key];
+      }
+      globalToolSettings[toolId][widget.key] = fallback;
     }
   });
 };

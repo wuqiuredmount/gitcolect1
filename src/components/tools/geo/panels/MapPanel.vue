@@ -163,4 +163,18 @@ const startDrag = (e) => {
   overflow: auto;
   white-space: normal;
 }
+
+/* ============ 移动端适配（2026-10-08 新增） ============ */
+/* 仅窄屏生效；不改 left/bottom（拖拽用 inline style，改 left 会破坏拖拽）。 */
+@media (max-width: 768px) {
+  /* 浮动面板：限制最大宽度，避免 left:60px + 宽内容溢出屏幕 */
+  .map-panel {
+    max-width: calc(100vw - 70px);
+  }
+  /* 内联面板下拉：贴合屏宽，降低最大高度 */
+  .map-panel.inline .panel-body {
+    max-width: 92vw;
+    max-height: 60vh;
+  }
+}
 </style>
